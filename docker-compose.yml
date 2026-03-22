@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  # FastAPI application (connects to remote PostgreSQL)
+  api:
+    build: .
+    container_name: rag_api
+    environment:
+      DATABASE_URL: postgresql://postgre:2402@23.101.8.7:5432/ragdb
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-models/gemini-embedding-001}
+      DIMENSION_OF_MODEL: ${DIMENSION_OF_MODEL:-768}
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000

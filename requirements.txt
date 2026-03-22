@@ -1,0 +1,40 @@
+# FastAPI và dependencies
+dependency-injector
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+aiofiles
+
+# Database
+sqlalchemy
+psycopg2-binary
+pgvector
+alembic
+
+# LangChain và AI
+langchain
+langchain-community
+langchain-google-genai
+langchain-text-splitters
+google-generativeai
+numpy
+
+# Utilities
+python-dotenv
+beautifulsoup4
+wikipedia
+requests
+rank-bm25
+markitdown
+aiofiles
+
+# Vietnamese NLP
+underthesea
+phonlp
+vncorenlp
+
+# Testing
+pytest
+httpx
