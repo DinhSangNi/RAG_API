@@ -25,25 +25,6 @@ class DocumentResponse(BaseModel):
         from_attributes = True
 
 
-class ChunkResponse(BaseModel):
-    """
-    Response schema for chunk
-    """
-    id: int
-    document_id: str  # UUID
-    content: str
-    chunk_index: int
-    section_id: Optional[int]
-    h1: Optional[str]
-    h2: Optional[str]
-    h3: Optional[str]
-    metadata: Optional[Dict[str, Any]]
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
 class SearchRequest(BaseModel):
     """
     Request schema for search API

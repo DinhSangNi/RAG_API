@@ -3,14 +3,13 @@ Combined worker for processing documents: ingest + chunk in one job
 Handles document ingestion, chunking, embedding, and database storage
 """
 
-import os
 import re
 import time
 import hashlib
 from pathlib import Path
 from bs4 import BeautifulSoup
 import markitdown
-from sqlalchemy import create_engine, update
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
@@ -291,7 +290,6 @@ SessionLocal = sessionmaker(bind=engine)
 
 
 def process_document(
-    job_id: str,
     document_id: str,
     file_path: str,
     source_type: str,
@@ -314,7 +312,6 @@ def process_document(
     5. Save to PostgreSQL
 
     Args:
-        job_id: Unique job identifier
         document_id: Document UUID
         file_path: Path to file to process
         source_type: Source type (local, cloud, wikipedia)
@@ -378,10 +375,6 @@ def process_document(
             print(f"🌐 Detected HTML file: {file_path}")
             
             # Bước 1: Clean HTML
-            if job:
-                job.meta['progress'] = {'step': 'cleaning_html', 'current': 5, 'total': 100}
-                job.save_meta()
-            
             step_start = time.time()
             print(f"🧹 Cleaning HTML: {file_path}")
             cleaned_file_path = clean_wikipedia_html(file_path)
@@ -391,10 +384,6 @@ def process_document(
             timing_stats['phases']['html_cleaning'] = step_duration
             
             # Bước 2: Convert to Markdown
-            if job:
-                job.meta['progress'] = {'step': 'converting_to_markdown', 'current': 15, 'total': 100}
-                job.save_meta()
-            
             step_start = time.time()
             print(f"📝 Converting to Markdown: {cleaned_file_path}")
             md_file_path = convert_html_to_normalized_md(cleaned_file_path)
@@ -404,10 +393,6 @@ def process_document(
             timing_stats['phases']['markdown_conversion'] = step_duration
             
             # Bước 3: Update document metadata (skip for summary)
-            if job:
-                job.meta['progress'] = {'step': 'updating_metadata', 'current': 30, 'total': 100}
-                job.save_meta()
-            
             if document:
                 meta_data = document.meta_data or {}  # type: ignore[assignment]
                 if isinstance(meta_data, dict):
@@ -426,10 +411,6 @@ def process_document(
             # Loại file khác - thử convert trực tiếp bằng MarkItDown
             print(f"📄 Detected file type: {file_extension}")
             
-            if job:
-                job.meta['progress'] = {'step': 'converting_to_markdown', 'current': 15, 'total': 100}
-                job.save_meta()
-            
             step_start = time.time()
             print(f"📝 Converting to Markdown: {file_path}")
             md_file_path = convert_html_to_normalized_md(file_path)
@@ -437,10 +418,6 @@ def process_document(
             print(f"✅ Converted to Markdown: {md_file_path}")
             print(f"⏱️  Conversion took: {step_duration:.2f}s")
             timing_stats['phases']['markdown_conversion'] = step_duration
-            
-            if job:
-                job.meta['progress'] = {'step': 'updating_metadata', 'current': 30, 'total': 100}
-                job.save_meta()
             
             if document:
                 meta_data = document.meta_data or {}  # type: ignore[assignment]

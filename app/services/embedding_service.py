@@ -7,7 +7,6 @@ from app.config import settings
 from pydantic import SecretStr
 import numpy as np
 from typing import List
-import os
 
 
 class EmbeddingService:

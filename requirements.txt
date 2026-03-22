@@ -5,13 +5,11 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 python-multipart
-aiofiles
 
 # Database
 sqlalchemy
 psycopg2-binary
 pgvector
-alembic
 
 # LangChain và AI
 langchain
@@ -24,15 +22,9 @@ numpy
 # Utilities
 python-dotenv
 beautifulsoup4
-wikipedia
-requests
-rank-bm25
 markitdown
-aiofiles
 
 # Vietnamese NLP
-underthesea
-phonlp
 vncorenlp
 
 # Testing
