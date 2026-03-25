@@ -3,6 +3,7 @@ RAG Service for advanced retrieval-augmented generation
 Implements hierarchical retrieval with query expansion and entity extraction
 """
 
+import asyncio
 import json
 import re
 import time
@@ -33,8 +34,8 @@ class RAGService:
         top_k: int = 20,
         bm25_weight: float = 0.5,
         semantic_weight: float = 0.5,
-        first_pass_k: int = 12,
-        variant_count: int = 3,
+        first_pass_k: int = 10,
+        variant_count: int = 2,
         rrf_k: int = 60
     ):
         """
@@ -62,7 +63,7 @@ class RAGService:
 
         self.top_k = top_k
         self.first_pass_k = first_pass_k
-        self.variant_count = min(max(1, variant_count), 3)
+        self.variant_count = min(max(1, variant_count), 2)
         self.rrf_k = rrf_k
         self.bm25_weight = bm25_weight
         self.semantic_weight = semantic_weight
@@ -100,66 +101,6 @@ CÂU HỎI: {question}
 TRẢ LỜI:"""),
         ])
         
-        # Alias extraction prompt
-#         self.alias_prompt = ChatPromptTemplate.from_messages([
-#             ("human", """Bạn sẽ trích xuất thông tin thực thể từ CONTEXT để hỗ trợ truy hồi.
-
-# Hãy trả về JSON hợp lệ theo schema:
-# {{
-#   "entity": "tên thực thể chính nếu xác định được, nếu không thì rỗng",
-#   "aliases": ["các tên gọi khác của cùng thực thể, nếu có"],
-#   "keywords": ["một vài từ khóa quan trọng liên quan đến câu hỏi (không quá chung chung)"]
-# }}
-
-# Ràng buộc:
-# - Chỉ dùng thông tin xuất hiện trong CONTEXT.
-# - Nếu không chắc entity là gì → entity = "".
-# - aliases: chỉ đưa alias thật sự cùng một người/tổ chức với entity trong CONTEXT.
-# - keywords: tối đa 8 từ/nhóm từ.
-# - Trả về JSON và CHỈ JSON, không thêm chữ nào khác.
-
-# CÂU HỎI: {question}
-
-# CONTEXT:
-# {context}
-# """)
-#         ])
-        self.alias_prompt = ChatPromptTemplate.from_messages([
-    ("human", """Bạn là một chuyên gia phân tích truy vấn (Query Parser). 
-Nhiệm vụ của bạn là trích xuất các thành phần quan trọng từ CÂU HỎI để tạo query variants cho tìm kiếm.
-
-RÀNG BUỘC QUAN TRỌNG:
-1. 'entity' CHỈ được lấy từ tên riêng/danh từ chỉ người/tổ chức được NHẮC TRỰC TIẾP trong CÂU HỎI
-2. KHÔNG được suy diễn entity từ CONTEXT (nếu context có "Trần Thuận Tông là vua thứ 12" mà câu hỏi chỉ hỏi "vua thứ 12" thì entity KHÔNG PHẢI là "Trần Thuận Tông")
-3. Nếu câu hỏi dạng "Ai là...", "Khi nào...", "Ở đâu..." thì entity thường RỖNG hoặc là cụm mô tả từ câu hỏi
-4. 'keywords' là các từ khóa đặc trưng, định danh cao từ CÂU HỎI (ví dụ: "thứ 12", "triều Nguyễn", "năm 1945")
-5. 'aliases' CHỈ dùng nếu entity xuất hiện trong CÂU HỎI và có tên thay thế trong CONTEXT
-
-SCHEMA TRẢ VỀ (JSON):
-{{
-  "entity": "tên riêng xuất hiện trong CÂU HỎI hoặc rỗng",
-  "aliases": ["tên thay thế nếu có trong context"],
-  "keywords": ["từ khóa quan trọng từ câu hỏi"]
-}}
-
-VÍ DỤ:
-Q: "Ai là vị hoàng đế thứ 12 của triều Nguyễn?"
-→ {{"entity": "", "aliases": [], "keywords": ["hoàng đế thứ 12", "triều Nguyễn", "vua thứ 12"]}}
-
-Q: "Khải Định sinh năm nào?"
-→ {{"entity": "Khải Định", "aliases": ["vua Khải Định", "Nguyễn Phúc Tuấn"], "keywords": ["sinh năm"]}}
-
-Q: "Cha của Bảo Đại là ai?"
-→ {{"entity": "Bảo Đại", "aliases": ["vua Bảo Đại"], "keywords": ["cha", "cha của Bảo Đại"]}}
-
-CÂU HỎI: {question}
-
-CONTEXT (chỉ để tìm aliases, KHÔNG dùng để suy diễn entity):
-{context}
-
-JSON:""")
-        ])
-        
         # Build chains
         self.rag_chain = (
             {
@@ -170,8 +111,6 @@ JSON:""")
             | self.llm
             | StrOutputParser()
         )
-        
-        self.alias_chain = self.alias_prompt | self.llm | StrOutputParser()
         
         print("✅ RAG Service ready!")
     
@@ -478,11 +417,18 @@ JSON:""")
                 print("No summary documents found for provided document IDs, falling back to full search")
                 summary_ids = None
         
+        # Compute query embedding ONCE to avoid recomputation across multiple searches
+        embed_started_at = time.perf_counter()
+        query_embedding = self.search_service.embedding_service.embed_text(question)
+        embed_elapsed = time.perf_counter() - embed_started_at
+        print(f"📌 Query embedding: {embed_elapsed:.3f}s")
+        
         # STEP 1: Query on summary documents
         print(f"\n📋 STEP 1: Search summary documents")
         step1_started_at = time.perf_counter()
         summary_docs = await self.search_service.hybrid_search_summaries(
             query=question,
+            query_embedding=query_embedding,  # ← Use cached embedding
             k=summary_k,
             bm25_weight=self.bm25_weight,
             semantic_weight=self.semantic_weight,
@@ -490,97 +436,48 @@ JSON:""")
             summary_ids=summary_ids
         )
         step1_elapsed = time.perf_counter() - step1_started_at
-        print(f"⏱️ STEP 1 done in {step1_elapsed:.3f}s")
+        print(f"✅ STEP 1 (summary search): {step1_elapsed:.3f}s | Found {len(summary_docs)} summary docs")
         
         max_score = summary_docs[0]['fused_score'] if summary_docs else 0.0
         max_semantic_score = max((doc.get('semantic_score', 0.0) for doc in summary_docs), default=0.0)
-        print(f"Found {len(summary_docs)} summary docs, max RRF score: {round(max_score, 4)}, max semantic: {round(max_semantic_score, 4)}")
         
         # Check if we should fall back to full child chunk search
         # Use semantic similarity (cosine) as threshold — RRF scores are always ~0.016 for top result
         if not summary_docs or max_semantic_score < min_summary_score:
-            print(f"⚠️ No good summary docs found (max semantic score {round(max_semantic_score, 4)} < threshold {min_summary_score})")
-            print(f"Falling back to full child chunk search with 2-pass retrieval")
             
-            # PASS 1: Initial search on all child chunks
-            print(f"\n📦 FALLBACK - Pass 1: Initial search")
-            fallback_pass1_started_at = time.perf_counter()
-            first_pass_chunks = await self.search_service.hybrid_search(
+            # FALLBACK: Direct search on all child chunks
+            print(f"\n📦 FALLBACK - Direct search")
+            fallback_started_at = time.perf_counter()
+            fallback_chunks = await self.search_service.hybrid_search(
                 query=question,
-                k=self.first_pass_k,
+                query_embedding=query_embedding,  # ← Reuse cached embedding
+                k=max(chunk_k, 20),
                 bm25_weight=self.bm25_weight,
                 semantic_weight=self.semantic_weight,
                 rrf_k=self.rrf_k,
                 summary_ids=summary_ids
             )
-            print(f"⏱️ FALLBACK pass 1 done in {time.perf_counter() - fallback_pass1_started_at:.3f}s")
-            print(f"Found {len(first_pass_chunks)} chunks in first pass")
-            
-            # Extract entity info for query expansion
-            print(f"\n🔄 FALLBACK - Query expansion")
-            info = self._extract_entity_info(question, first_pass_chunks)
-            entity = info.get("entity", "")
-            aliases = info.get("aliases") or []
-            keywords = info.get("keywords") or []
-            
-            print(f"🧠 Entity: {entity or '(none)'} | Aliases: {len(aliases)} | Keywords: {len(keywords)}")
-            
-            # Generate query variants
-            variants = self._make_variants(question, info)
-            print(f"🧩 Variants: {len(variants)}")
-            for i, v in enumerate(variants, 1):
-                print(f"   Q{i}: {v}")
-            
-            # PASS 2: Search with variants on all child chunks
-            print(f"\n🔎 FALLBACK - Pass 2: Search with variants")
-            all_results = [first_pass_chunks]
-            variant_results = []  # Track results for each variant
-            
-            for i, variant in enumerate(variants, 1):
-                print(f"\n📝 Variant {i}/{len(variants)}: {variant}")
-                variant_started_at = time.perf_counter()
-                results = await self.search_service.hybrid_search(
-                    query=variant,
-                    k=max(chunk_k, 20),
-                    bm25_weight=self.bm25_weight,
-                    semantic_weight=self.semantic_weight,
-                    rrf_k=self.rrf_k,
-                    summary_ids=summary_ids
-                )
-                all_results.append(results)
-                variant_results.append({
-                    'variant': variant,
-                    'top_3_chunks': results[:3]  # Store top 3 for this variant
-                })
-                print(f"  → {len(results)} chunks | {time.perf_counter() - variant_started_at:.3f}s")
-            
-            # RRF fusion
-            print(f"\n📊 FALLBACK - RRF fusion of {len(all_results)} result sets")
-            fallback_fusion_started_at = time.perf_counter()
-            fused_chunks = self._rrf_fuse(all_results, rrf_k=self.rrf_k, top_k=chunk_k)
-            fallback_fusion_elapsed = time.perf_counter() - fallback_fusion_started_at
-            print(f"✅ Fused: {len(fused_chunks)} chunks")
-            print(f"⏱️ FALLBACK fusion done in {fallback_fusion_elapsed:.3f}s")
+            fallback_elapsed = time.perf_counter() - fallback_started_at
+            print(f"✅ FALLBACK (direct search): {fallback_elapsed:.3f}s | Found {len(fallback_chunks)} chunks")
 
             total_retrieval_time = time.perf_counter() - retrieval_started_at
-            print(f"✅ Retrieval complete (fallback) | trace={trace} | total={total_retrieval_time:.3f}s")
+            print(f"\n🔍 RETRIEVAL SUMMARY (fallback mode):")
+            print(f"  Summary search: {step1_elapsed:.3f}s")
+            print(f"  Fallback search: {fallback_elapsed:.3f}s")
+            print(f"  TOTAL RETRIEVAL: {total_retrieval_time:.3f}s | trace={trace}")
             
             return {
-                'docs': fused_chunks,
+                'docs': fallback_chunks,
                 'source': 'chunks_fallback',
                 'metadata': {
                     'summary_docs_found': len(summary_docs),
                     'max_summary_score': max_score,
-                    'chunks_returned': len(fused_chunks),
-                    'variants_count': len(variants),
-                    'variants': variants,
-                    'variant_results': variant_results,
-                    'fallback_mode': 'two_pass',
+                    'chunks_returned': len(fallback_chunks),
+                    'fallback_mode': 'direct_search',
                     'trace_id': trace,
                     'retrieval_timing': {
                         'step1_summary_search_s': round(step1_elapsed, 3),
-                        'fallback_pass1_s': round(time.perf_counter() - fallback_pass1_started_at, 3),
-                        'fallback_fusion_s': round(fallback_fusion_elapsed, 3),
+                        'fallback_search_s': round(fallback_elapsed, 3),
                         'total_retrieval_s': round(total_retrieval_time, 3),
                     },
                 }
@@ -630,6 +527,7 @@ JSON:""")
         print(f"\n🔎 STEP 2: Search child chunks linked to relevant summaries")
         scoped_child_started_at = time.perf_counter()
         scoped_child_chunks = await self.search_service.hybrid_search(
+            query_embedding=query_embedding,  # ← Reuse cached embedding
             query=question,
             k=chunk_k,
             bm25_weight=self.bm25_weight,
@@ -764,14 +662,17 @@ JSON:""")
         
         answer = (answer or "").strip()
         generation_elapsed = time.perf_counter() - generation_started_at
-        print(f"💬 CHAT[{trace}] generation done in {generation_elapsed:.3f}s")
         
         # Normalize fallback
         if not answer or ("không tìm thấy" in answer.lower() and "tài liệu" in answer.lower()):
             answer = "Tôi không tìm thấy thông tin này trong tài liệu."
 
         total_elapsed = time.perf_counter() - chat_started_at
-        print(f"🟣 CHAT END | trace={trace} | total={total_elapsed:.3f}s")
+        
+        print(f"\n⏱️ TIMING SUMMARY:")
+        print(f"  Retrieval: {retrieval_elapsed:.3f}s")
+        print(f"  Generation (LLM): {generation_elapsed:.3f}s")
+        print(f"  TOTAL: {total_elapsed:.3f}s | trace={trace}")
         
         return {
             'answer': answer,

@@ -86,7 +86,6 @@ class SearchService:
         high_df.sort(key=lambda x: x[1], reverse=True)
 
         stop = set([t for t, _ in high_df[:max_size]])
-        print(f"🧹 Auto-stopwords: {len(stop)} tokens (DF≥{threshold}/{n_docs})")
         return stop
 
     def get_stopwords(self) -> set:
@@ -115,11 +114,12 @@ class SearchService:
         Returns:
             List of search results with metadata
         """
+        bm25_started_at = time.perf_counter()
+        
         # Always segment query to match VnCoreNLP-segmented bm25_text tokens
         original_query = query
         query = self.segmentation_service.segment_query(query)
         query = self._sanitize_bm25_query(query)
-        print(f"🔤 BM25: \"{original_query}\" → \"{query}\"")
 
         # BM25 search on the word-segmented field
         search_field = "bm25_text"
@@ -133,7 +133,6 @@ class SearchService:
             from_clause += " INNER JOIN child_chunk_summary_association ccsa ON c.id = ccsa.child_chunk_id"
             where_conditions.append("ccsa.summary_id::text = ANY(:summary_ids)")
             params["summary_ids"] = summary_ids
-            print(f"📌 Scoped to {len(summary_ids)} summary documents")
 
         where_clause = " AND ".join(where_conditions)
 
@@ -161,7 +160,6 @@ class SearchService:
         # Execute query
         try:
             results = self.db.execute(search_query, params).fetchall()
-            print(f"📊 BM25 results: {len(results)} child chunks")
             
             # Get child chunk IDs to fetch summary associations
             chunk_ids = [r.id for r in results]
@@ -179,6 +177,9 @@ class SearchService:
                         summary_associations[chunk_id] = []
                     summary_associations[chunk_id].append(str(summary_id))
 
+            bm25_elapsed = time.perf_counter() - bm25_started_at
+            print(f"    [CHILD] BM25 search: {bm25_elapsed:.3f}s | {len(results)} results")
+            
             return [
                 {
                     'id': r.id,
@@ -206,7 +207,8 @@ class SearchService:
         self,
         query: str,
         k: int = 10,
-        summary_ids: Optional[List[str]] = None
+        summary_ids: Optional[List[str]] = None,
+        query_embedding: Optional[List[float]] = None
     ) -> List[Dict[str, Any]]:
         """
         Semantic search on child_chunks using pgvector cosine similarity
@@ -215,14 +217,25 @@ class SearchService:
             query: Search query text
             k: Number of results to return
             summary_ids: Optional list of summary document IDs to scope search
+            query_embedding: Optional pre-computed query embedding to avoid recalculation
 
         Returns:
             List of search results with similarity scores
         """
+        semantic_started_at = time.perf_counter()
+        
         # Generate query embedding
-        query_embedding = self.embedding_service.embed_text(query)
+        if query_embedding is None:
+            embed_started = time.perf_counter()
+            query_embedding = self.embedding_service.embed_text(query)
+            embed_elapsed = time.perf_counter() - embed_started
+            cached_indicator = "⚡NEW"
+        else:
+            embed_elapsed = 0
+            cached_indicator = "🔄PARAM"
 
         # Base query with cosine distance
+        db_started = time.perf_counter()
         base_query = self.db.query(
             ChildChunk.id,
             ChildChunk.content,
@@ -244,10 +257,10 @@ class SearchService:
                 child_chunk_summary_association,
                 ChildChunk.id == child_chunk_summary_association.c.child_chunk_id
             ).filter(child_chunk_summary_association.c.summary_id.in_(summary_ids))
-            print(f"📌 Scoped to {len(summary_ids)} summary documents")
 
         # Order by similarity and limit
         results = base_query.order_by(text('similarity DESC')).limit(k).all()
+        db_elapsed = time.perf_counter() - db_started
 
         # Get child chunk IDs to fetch summary associations
         chunk_ids = [r.id for r in results]
@@ -264,6 +277,9 @@ class SearchService:
                 if chunk_id not in summary_associations:
                     summary_associations[chunk_id] = []
                 summary_associations[chunk_id].append(str(summary_id))
+
+        semantic_elapsed = time.perf_counter() - semantic_started_at
+        print(f"    [CHILD] Semantic search: {semantic_elapsed:.3f}s (embed: {embed_elapsed:.3f}s {cached_indicator}, db: {db_elapsed:.3f}s) | {len(results)} results")
 
         return [
             {
@@ -313,6 +329,7 @@ class SearchService:
         query: str,
         k: int,
         summary_ids: Optional[List[str]],
+        query_embedding: Optional[List[float]] = None,
     ) -> List[Dict[str, Any]]:
         """Run semantic search in a dedicated DB session for thread-safe parallel execution."""
         db = SessionLocal()
@@ -326,6 +343,7 @@ class SearchService:
                 query=query,
                 k=k,
                 summary_ids=summary_ids,
+                query_embedding=query_embedding,  # ← Pass cached embedding
             )
         finally:
             db.close()
@@ -340,7 +358,8 @@ class SearchService:
         semantic_k: Optional[int] = None,
         rrf_k: int = 60,
         summary_ids: Optional[List[str]] = None,
-        use_segmentation: bool = True
+        use_segmentation: bool = True,
+        query_embedding: Optional[List[float]] = None
     ) -> List[Dict[str, Any]]:
         """
         Hybrid search on child_chunks using RRF (Reciprocal Rank Fusion)
@@ -356,6 +375,7 @@ class SearchService:
             rrf_k: RRF parameter (default: 60)
             summary_ids: Optional list of summary document IDs to scope search
             use_segmentation: If True, segment query (default: True)
+            query_embedding: Optional pre-computed query embedding to avoid recalculation
 
         Returns:
             List of fused search results
@@ -363,13 +383,16 @@ class SearchService:
         bm25_k = bm25_k or max(k, 20)
         semantic_k = semantic_k or max(k, 20)
 
-        print(f"\n🔍 HYBRID SEARCH (Child Chunks)")
-        print(f"Query: {query}")
-        print(f"Weights: BM25={bm25_weight}, Semantic={semantic_weight}")
-        print(f"BM25_k={bm25_k}, Semantic_k={semantic_k}, RRF_k={rrf_k}")
         hybrid_started_at = time.perf_counter()
-
-        # Run BM25 and semantic search concurrently.
+        
+        # Compute query embedding if not provided (for semantic search)
+        if query_embedding is None:
+            embed_started = time.perf_counter()
+            query_embedding = self.embedding_service.embed_text(query)
+            embed_elapsed = time.perf_counter() - embed_started
+            print(f"    ⚡VARIANT Embedding: {embed_elapsed:.3f}s | Query: {query[:40]}...")
+        else:
+            embed_elapsed = 0
         retrieval_started_at = time.perf_counter()
         bm25_task = asyncio.to_thread(
             self._bm25_search_isolated_session,
@@ -383,13 +406,11 @@ class SearchService:
             query,
             semantic_k,
             summary_ids,
+            query_embedding,  # ← Pass cached embedding
         )
         bm25_results, semantic_results = await asyncio.gather(bm25_task, semantic_task)
         retrieval_elapsed = time.perf_counter() - retrieval_started_at
-        print(f"⏱️ Parallel retrieval done in {retrieval_elapsed:.3f}s")
-
-        print(f"📄 BM25: {len(bm25_results)} results")
-        print(f"🎯 Semantic: {len(semantic_results)} results")
+        print(f"  [CHILD HYBRID] BM25+Semantic parallel: {retrieval_elapsed:.3f}s")
 
         # RRF fusion
         fusion_started_at = time.perf_counter()
@@ -417,15 +438,7 @@ class SearchService:
 
         fusion_elapsed = time.perf_counter() - fusion_started_at
         total_elapsed = time.perf_counter() - hybrid_started_at
-
-        print(f"✅ Fused: {len(results)} results")
-        print(f"⏱️ Fusion: {fusion_elapsed:.3f}s | Total hybrid: {total_elapsed:.3f}s")
-        if results:
-            top_result = results[0]
-            headers = f"{top_result.get('h1', '')} / {top_result.get('h2', '')}"
-            top_scores = [round(r.get('fused_score', 0), 4) for r in results[:3]]
-            print(f"Top result: {headers}")
-            print(f"Top scores: {top_scores}")
+        print(f"  [CHILD HYBRID] RRF fusion: {fusion_elapsed:.3f}s | TOTAL: {total_elapsed:.3f}s")
 
         return results
 
@@ -448,11 +461,12 @@ class SearchService:
         Returns:
             List of summary search results
         """
+        bm25_started_at = time.perf_counter()
+        
         # Always segment query to match VnCoreNLP-segmented bm25_text tokens
         original_query = query
         query = self.segmentation_service.segment_query(query)
         query = self._sanitize_bm25_query(query)
-        print(f"🔤 BM25: \"{original_query}\" → \"{query}\"")
 
         # Build query with optional filter — search on bm25_text
         base_query = """
@@ -482,7 +496,8 @@ class SearchService:
                 params
             ).fetchall()
 
-            print(f"📊 BM25 Summary: {len(results)} results")
+            bm25_elapsed = time.perf_counter() - bm25_started_at
+            print(f"    [SUMMARY] BM25 search: {bm25_elapsed:.3f}s | {len(results)} results")
 
             return [
                 {
@@ -502,7 +517,8 @@ class SearchService:
         self,
         query: str,
         k: int = 10,
-        summary_ids: Optional[List[str]] = None
+        summary_ids: Optional[List[str]] = None,
+        query_embedding: Optional[List[float]] = None
     ) -> List[Dict[str, Any]]:
         """
         Semantic search on summary documents using pgvector
@@ -511,12 +527,22 @@ class SearchService:
             query: Search query text
             k: Number of results to return
             summary_ids: Optional list of summary document IDs to filter by
+            query_embedding: Optional pre-computed query embedding to avoid recalculation
 
         Returns:
             List of summary search results with similarity scores
         """
+        semantic_started_at = time.perf_counter()
+        
         # Generate query embedding
-        query_embedding = self.embedding_service.embed_text(query)
+        if query_embedding is None:
+            embed_started = time.perf_counter()
+            query_embedding = self.embedding_service.embed_text(query)
+            embed_elapsed = time.perf_counter() - embed_started
+            cached_indicator = "⚡NEW"
+        else:
+            embed_elapsed = 0
+            cached_indicator = "🔄PARAM"
 
         # Build query with optional filter
         query_obj = self.db.query(
@@ -529,7 +555,12 @@ class SearchService:
         if summary_ids:
             query_obj = query_obj.filter(SummaryDocument.id.in_(summary_ids))
         
+        db_started = time.perf_counter()
         results = query_obj.order_by(text('similarity DESC')).limit(k).all()
+        db_elapsed = time.perf_counter() - db_started
+
+        semantic_elapsed = time.perf_counter() - semantic_started_at
+        print(f"    [SUMMARY] Semantic search: {semantic_elapsed:.3f}s (embed: {embed_elapsed:.3f}s {cached_indicator}, db: {db_elapsed:.3f}s) | {len(results)} results")
 
         return [
             {
@@ -570,6 +601,7 @@ class SearchService:
         query: str,
         k: int,
         summary_ids: Optional[List[str]],
+        query_embedding: Optional[List[float]] = None,
     ) -> List[Dict[str, Any]]:
         """Run summary semantic search in a dedicated DB session for thread-safe parallel execution."""
         db = SessionLocal()
@@ -583,9 +615,25 @@ class SearchService:
                 query=query,
                 k=k,
                 summary_ids=summary_ids,
+                query_embedding=query_embedding,  # ← Pass cached embedding
             )
         finally:
             db.close()
+
+    def _semantic_search_summaries_direct(
+        self,
+        query: str,
+        k: int,
+        summary_ids: Optional[List[str]],
+        query_embedding: Optional[List[float]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Wrapper for semantic_search_summaries with pre-computed embedding (for asyncio.to_thread usage)."""
+        return self._semantic_search_summaries_isolated_session(
+            query=query,
+            k=k,
+            summary_ids=summary_ids,
+            query_embedding=query_embedding,
+        )
 
     async def hybrid_search_summaries(
         self,
@@ -595,7 +643,8 @@ class SearchService:
         semantic_weight: float = 0.5,
         rrf_k: int = 60,
         summary_ids: Optional[List[str]] = None,
-        use_segmentation: bool = True
+        use_segmentation: bool = True,
+        query_embedding: Optional[List[float]] = None
     ) -> List[Dict[str, Any]]:
         """
         Hybrid search on summary documents using RRF
@@ -608,14 +657,16 @@ class SearchService:
             rrf_k: RRF parameter (default: 60)
             summary_ids: Optional list of summary document IDs to filter by
             use_segmentation: If True, segment query (default: True)
+            query_embedding: Pre-computed query embedding (if not provided, will be computed)
 
         Returns:
             List of fused summary search results
         """
-        print(f"\n🔍 HYBRID SEARCH SUMMARIES")
-        print(f"Query: {query}")
-        print(f"Weights: BM25={bm25_weight}, Semantic={semantic_weight}")
         hybrid_started_at = time.perf_counter()
+        
+        # Compute query embedding if not provided (for semantic search)
+        if query_embedding is None:
+            query_embedding = self.embedding_service.embed_text(query)
 
         retrieval_started_at = time.perf_counter()
         bm25_task = asyncio.to_thread(
@@ -626,17 +677,15 @@ class SearchService:
             use_segmentation,
         )
         semantic_task = asyncio.to_thread(
-            self._semantic_search_summaries_isolated_session,
+            self._semantic_search_summaries_direct,
             query,
             max(k, 10),
             summary_ids,
+            query_embedding,  # ← Pass cached embedding
         )
         bm25_results, semantic_results = await asyncio.gather(bm25_task, semantic_task)
         retrieval_elapsed = time.perf_counter() - retrieval_started_at
-        print(f"⏱️ Parallel summary retrieval done in {retrieval_elapsed:.3f}s")
-
-        print(f"📄 BM25 Summary: {len(bm25_results)} results")
-        print(f"🎯 Semantic Summary: {len(semantic_results)} results")
+        print(f"  [SUMMARY HYBRID] BM25+Semantic parallel: {retrieval_elapsed:.3f}s")
 
         # Build semantic score map for threshold evaluation
         semantic_score_map = {doc['id']: doc['score'] for doc in semantic_results}
@@ -662,19 +711,12 @@ class SearchService:
         results = [x['doc'] for x in fused[:k]]
 
         # Add fused score and raw semantic_score to each result
-        # semantic_score (cosine similarity) is the meaningful relevance signal;
-        # fused_score (RRF) is constant ~0.016 for top results and cannot be used as threshold
         for i, result in enumerate(results):
             result['fused_score'] = fused[i]['score']
             result['semantic_score'] = semantic_score_map.get(result['id'], 0.0)
 
-        max_score = results[0]['fused_score'] if results else 0.0
-        max_semantic = results[0]['semantic_score'] if results else 0.0
         fusion_elapsed = time.perf_counter() - fusion_started_at
         total_elapsed = time.perf_counter() - hybrid_started_at
-
-        print(f"✅ Fused Summaries: {len(results)} results")
-        print(f"Max RRF score: {round(max_score, 4)} | Max semantic score: {round(max_semantic, 4)}")
-        print(f"⏱️ Fusion: {fusion_elapsed:.3f}s | Total summary hybrid: {total_elapsed:.3f}s")
+        print(f"  [SUMMARY HYBRID] RRF fusion: {fusion_elapsed:.3f}s | TOTAL: {total_elapsed:.3f}s")
 
         return results

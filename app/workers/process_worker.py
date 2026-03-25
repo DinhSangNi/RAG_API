@@ -285,7 +285,11 @@ def read_text_file_fallback(file_path: str) -> str:
 
 
 # Tạo database session cho worker
-engine = create_engine(settings.DATABASE_URL)
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_size=2,           # Minimum number of connections
+    max_overflow=28        # Maximum overflow connections (total max = 30)
+)
 SessionLocal = sessionmaker(bind=engine)
 
 

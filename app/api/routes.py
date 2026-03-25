@@ -120,9 +120,18 @@ async def rag_chat(
         verbose=request.verbose
     )
     
+    # Extract metadata
+    metadata = result['metadata']
+    
+    # Return only essential fields: question, answer, chunks_used, timing
+    simplified_metadata = {
+        'chunks_used': metadata.get('chunks_used', 0),
+        'timing': metadata.get('timing', {})
+    }
+    
     return ChatResponse(
         question=request.question,
         answer=result['answer'],
-        metadata=result['metadata']
+        metadata=simplified_metadata
     )
 

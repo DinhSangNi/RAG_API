@@ -12,7 +12,9 @@ from app.config import settings
 engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
-    echo=settings.DEBUG
+    echo=settings.DEBUG,
+    pool_size=2,           # Minimum number of connections
+    max_overflow=28        # Maximum overflow connections (total max = 30)
 )
 
 # Create SessionLocal class for database sessions
