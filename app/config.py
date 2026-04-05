@@ -49,16 +49,16 @@ class Settings(BaseSettings):
     RAW_DIR: str = "./data/raw"
 
     # Redis Queue Configuration
-    REDIS_URL: str = "redis://localhost:6379/0"
-    REDIS_HOST: str = "localhost"
+    REDIS_URL: str = "redis://127.0.0.1:6379/0"
+    REDIS_HOST: str = "127.0.0.1"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     QUEUE_NAME: str = "rag_indexing"
 
-    # Cloudinary Configuration
-    CLOUDINARY_CLOUD_NAME: str = "do65kca8j"
-    CLOUDINARY_API_KEY: str = "278929117957951"
-    CLOUDINARY_API_SECRET: str = "Ve2Gss-i1gLiv8eLHn8eab-9yvA"
+    # Cloudinary Configuration (Load from .env)
+    CLOUDINARY_CLOUD_NAME: str = ""
+    CLOUDINARY_API_KEY: str = ""
+    CLOUDINARY_API_SECRET: str = ""
     CLOUDINARY_UPLOAD_FOLDER: str = "rag_documents"
     
     # Temporary file storage for batch uploads
@@ -74,8 +74,9 @@ class Settings(BaseSettings):
             self.RAW_DIR = "/app/data/raw"
             self.TEMP_UPLOAD_DIR = "/app/data/uploads"  # Same as UPLOAD_DIR
             # In Docker, Redis is usually accessible via 'redis' service name
-            self.REDIS_URL = "redis://redis:6379/0"
-            self.REDIS_HOST = "redis"
+            if not self.REDIS_HOST or self.REDIS_HOST in ("localhost", "127.0.0.1"):
+                self.REDIS_URL = "redis://redis:6379/0"
+                self.REDIS_HOST = "redis"
 
     class Config:
         env_file = ".env"
