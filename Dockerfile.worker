@@ -2,11 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies (including Java for VnCoreNLP)
+# Accept worker file as build argument
+ARG WORKER_FILE=worker1.py
+
+# Install minimal system dependencies (Java only for VnCoreNLP)
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    postgresql-client \
     default-jre-headless \
     wget \
     && rm -rf /var/lib/apt/lists/*
@@ -20,20 +20,26 @@ RUN mkdir -p /app/vncorenlp/models/wordsegmenter \
     && wget -q -O /app/vncorenlp/models/wordsegmenter/wordsegmenter.rdr \
     https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/wordsegmenter.rdr
 
-# Copy requirements
-COPY requirements.txt .
+# Copy worker-specific requirements only
+COPY requirements-worker.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (optimized for workers)
+RUN pip install --no-cache-dir -r requirements-worker.txt
 
-# Copy application code
-COPY . .
+# Copy only necessary app files for workers
+COPY app/config.py app/
+COPY app/__init__.py app/
+COPY app/database/ app/database/
+COPY app/services/ app/services/
+COPY app/workers/ app/workers/
+
+# Copy worker startup scripts
+COPY worker1.py .
+COPY worker2.py .
 
 # Create data directory (only uploads needed)
 RUN mkdir -p /app/data/uploads
 
-# Expose port
-EXPOSE 8000
-
-# Default command (can be overridden in docker-compose)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# No port exposure needed for workers
+# Use shell form CMD to support variable substitution
+CMD /bin/sh -c "python $WORKER_FILE"

@@ -9,6 +9,12 @@ from app.api.routes import router
 from app.config import settings
 from app.database.connection import engine, Base
 from app.containers import Container
+import os
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
 # Bootstrap DI container                                              #
@@ -45,7 +51,33 @@ app.include_router(router)
 
 
 @app.on_event("startup")
-async def _warm_up_stopwords():
+async def _startup():
+    """Initialize application on startup"""
+    print("\n" + "="*70)
+    print("🚀 RAG SERVICE API STARTING UP")
+    print("="*70)
+    
+    # Create required directories
+    directories = [
+        settings.UPLOAD_DIR,
+        settings.TEMP_UPLOAD_DIR,
+        settings.PROCESSED_DIR,
+        settings.RAW_DIR,
+    ]
+    
+    for directory in directories:
+        os.makedirs(directory, exist_ok=True)
+        print(f"✅ {directory}")
+    
+    # Warm up stopwords
+    print("\n🔥 Warming up services...")
+    _warm_up_stopwords()
+    
+    print("\n✅ Application ready!")
+    print("="*70 + "\n")
+
+
+def _warm_up_stopwords():
     """Build the auto-stopword cache once at startup so the first real request
     doesn't pay the O(n) corpus scan cost.
     """
@@ -68,7 +100,9 @@ async def root():
     return {
         "message": "RAG Service API",
         "version": settings.APP_VERSION,
-        "docs": "/docs"
+        "docs": "/docs",
+        "queue_name": settings.QUEUE_NAME,
+        "redis_url": settings.REDIS_URL
     }
 
 
@@ -77,9 +111,25 @@ async def health_check():
     """
     Health check endpoint
     """
+    from redis import Redis
+    
+    redis_ok = False
+    try:
+        redis_conn = Redis(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            db=settings.REDIS_DB,
+            decode_responses=True
+        )
+        redis_conn.ping()
+        redis_ok = True
+    except Exception as e:
+        logger.warning(f"Redis health check failed: {e}")
+    
     return {
         "status": "healthy",
-        "service": settings.APP_NAME
+        "service": settings.APP_NAME,
+        "redis": "connected" if redis_ok else "disconnected"
     }
 
 

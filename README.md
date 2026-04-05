@@ -11,6 +11,46 @@ Hệ thống RAG (Retrieval-Augmented Generation) 4 tầng với kiến trúc ph
 - ✅ **Duplicate Detection** - SHA256 hash để tránh trùng lặp
 - ✅ **Docker Ready** - Deploy một lệnh với docker-compose
 - ✅ **Auto Documentation** - Swagger UI tích hợp sẵn
+- ✅ **Queue System** - Redis Queue với 2 parallel workers & Cloudinary integration
+- ✅ **Batch Upload** - Upload nhiều file cùng lúc, xử lý tự động
+
+---
+
+## 🎯 Queue System (NEW)
+
+Hệ thống **Redis Queue** cho phép upload batch files với xử lý song song:
+
+```
+Multiple Files Upload
+    ↓
+Temp Storage
+    ↓ (Job per file)
+Redis Queue
+    ↓ ↓ (2 Workers)
+[Upload to Cloudinary] → [Indexing Workflow] → [Save to DB]
+```
+
+### Tính năng:
+
+- 📤 Upload multiple files qua 1 API call
+- 🔄 Tự động xử lý: Cloudinary + Chunking + Embedding
+- 👷 2 parallel workers cho xử lý nhanh
+- 📊 Real-time job status tracking
+- 🚨 Error handling & retry logic
+
+### Quick Start:
+
+```bash
+# Start all services (API + 2 Workers + Redis)
+docker-compose up -d
+
+# Upload files
+curl -F "files=@doc1.md" -F "files=@doc2.pdf" \
+     http://localhost:8000/api/v1/upload
+
+# Check job status
+curl http://localhost:8000/api/v1/jobs/{job_id}
+```
 
 ---
 

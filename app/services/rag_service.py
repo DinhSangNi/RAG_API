@@ -567,6 +567,41 @@ TRẢ LỜI:"""),
             }
         }
     
+    def _extract_active_person(self, question: str, docs: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        Extract the main person being asked about from the question
+        E.g. "Hồ Chí Minh có con không" → "Hồ Chí Minh"
+        E.g. "Ai là Hồ Chí Minh" → "Hồ Chí Minh"
+        """
+        try:
+            # Simple extraction prompt
+            extract_prompt = ChatPromptTemplate.from_messages([
+                ("human", """Trích xuất tên người chính mà câu hỏi đang hỏi về. 
+Trả lời CHỈ tên người, không kèm theo giải thích.
+
+Nếu không có người cụ thể nào, trả lời: NONE
+
+Câu hỏi: {question}
+
+Trả lời:""")
+            ])
+            
+            extract_chain = extract_prompt | self.llm | StrOutputParser()
+            person = extract_chain.invoke({"question": question}).strip()
+            
+            # Clean response
+            if person and person.upper() != "NONE" and len(person) > 0:
+                # Remove common punctuation and clean up
+                person = re.sub(r'^[-\s:"\']*|[-\s:"\']*$', '', person).strip()
+                # If still has content, return it
+                if person and len(person) > 1:
+                    return person
+            
+            return None
+        except Exception as e:
+            print(f"⚠️  Error extracting active_person: {e}")
+            return None
+    
     async def chat(
         self, 
         question: str, 
@@ -667,6 +702,11 @@ TRẢ LỜI:"""),
         if not answer or ("không tìm thấy" in answer.lower() and "tài liệu" in answer.lower()):
             answer = "Tôi không tìm thấy thông tin này trong tài liệu."
 
+        # Extract active person being asked about
+        active_person = self._extract_active_person(question, docs)
+        if active_person:
+            print(f"👤 Active person: {active_person}")
+
         total_elapsed = time.perf_counter() - chat_started_at
         
         print(f"\n⏱️ TIMING SUMMARY:")
@@ -676,6 +716,7 @@ TRẢ LỜI:"""),
         
         return {
             'answer': answer,
+            'active_person': active_person,
             'chunks': docs[:10],  # Return top 10 for reference
             'metadata': {
                 **metadata,

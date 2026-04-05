@@ -96,4 +96,63 @@ class ChatResponse(BaseModel):
     """
     question: str
     answer: str
+    active_person: Optional[str] = None
     metadata: Dict[str, Any]
+
+
+class UploadJobResponse(BaseModel):
+    """
+    Response schema for upload job
+    """
+    job_id: str
+    file_name: str
+    status: str  # queued, processing, completed, failed
+    message: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "123e4567-e89b-12d3-a456-426614174000",
+                "file_name": "document.pdf",
+                "status": "queued",
+                "message": "File queued for processing"
+            }
+        }
+
+
+class BatchUploadResponse(BaseModel):
+    """
+    Response schema for batch upload
+    """
+    batch_id: str
+    total_files: int
+    jobs: List[UploadJobResponse]
+    message: str
+
+
+class JobStatusResponse(BaseModel):
+    """
+    Response schema for job status
+    """
+    job_id: str
+    status: str  # queued, processing, completed, failed
+    file_name: Optional[str] = None
+    document_id: Optional[str] = None
+    cloudinary_url: Optional[str] = None
+    progress: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    timing: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "123e4567-e89b-12d3-a456-426614174000",
+                "status": "completed",
+                "file_name": "document.pdf",
+                "document_id": "doc-123",
+                "cloudinary_url": "https://res.cloudinary.com/...",
+                "progress": {"step": "completed", "current": 100, "total": 100},
+                "message": "Document processed successfully"
+            }
+        }

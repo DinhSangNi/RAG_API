@@ -45,8 +45,24 @@ class Settings(BaseSettings):
     # File Storage Paths
     DATA_DIR: str = "./data"
     UPLOAD_DIR: str = "./data/uploads"
-    PROCESSED_DIR: str = "./data/processed_data"
-    RAW_DIR: str = "./data/raw_data"
+    PROCESSED_DIR: str = "./data/processed"
+    RAW_DIR: str = "./data/raw"
+
+    # Redis Queue Configuration
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    QUEUE_NAME: str = "rag_indexing"
+
+    # Cloudinary Configuration
+    CLOUDINARY_CLOUD_NAME: str = "do65kca8j"
+    CLOUDINARY_API_KEY: str = "278929117957951"
+    CLOUDINARY_API_SECRET: str = "Ve2Gss-i1gLiv8eLHn8eab-9yvA"
+    CLOUDINARY_UPLOAD_FOLDER: str = "rag_documents"
+    
+    # Temporary file storage for batch uploads
+    TEMP_UPLOAD_DIR: str = "./data/temp_uploads"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -54,8 +70,12 @@ class Settings(BaseSettings):
         if os.path.exists('/app'):
             self.DATA_DIR = "/app/data"
             self.UPLOAD_DIR = "/app/data/uploads"
-            self.PROCESSED_DIR = "/app/data/processed_data"
-            self.RAW_DIR = "/app/data/raw_data"
+            self.PROCESSED_DIR = "/app/data/processed"
+            self.RAW_DIR = "/app/data/raw"
+            self.TEMP_UPLOAD_DIR = "/app/data/uploads"  # Same as UPLOAD_DIR
+            # In Docker, Redis is usually accessible via 'redis' service name
+            self.REDIS_URL = "redis://redis:6379/0"
+            self.REDIS_HOST = "redis"
 
     class Config:
         env_file = ".env"

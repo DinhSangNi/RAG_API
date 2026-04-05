@@ -8,7 +8,6 @@ import time
 import hashlib
 from pathlib import Path
 from bs4 import BeautifulSoup
-import markitdown
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -31,7 +30,7 @@ def clean_wikipedia_html(html_file_path):
         html_file_path: Path to HTML file
 
     Returns:
-        Cleaned markdown text
+        Cleaned HTML content as string (in-memory, not saved to disk)
     """
     with open(html_file_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "html.parser")
@@ -172,15 +171,9 @@ def clean_wikipedia_html(html_file_path):
         if tag.has_attr('lang'):
             del tag['lang']
 
-    input_file_name = Path(html_file_path).stem
-    temp_html_file_path = f"data/raw_data/wikipedia/temp_clean_html/{input_file_name}.html"
-    os.makedirs(os.path.dirname(temp_html_file_path), exist_ok=True)
-    with open(temp_html_file_path, "w", encoding="utf-8") as f:
-        f.write(str(content))
-
-    print(f"Đã lưu HTML đã làm sạch vào: {temp_html_file_path}")
-
-    return temp_html_file_path
+    # Return cleaned HTML as string (in-memory, no file saving)
+    print(f"✅ Cleaned HTML (in-memory)")
+    return str(content)
 
 
 # ============================================================================
@@ -247,41 +240,77 @@ def normalize_markdown(md_text):
     return result.strip()
 
 
-def convert_html_to_normalized_md(html_file_path, output_md_file_path=None):
-    md = markitdown.MarkItDown()   
-    rs = md.convert(html_file_path)
-    normalized_md = normalize_markdown(rs.text_content)
-
-    if output_md_file_path is None:
-        name = Path(html_file_path).stem
-        output_md_file_path = "data/processed_data/{}.md".format(name)
+def convert_html_to_normalized_md(cleaned_html_content):
+    """
+    Convert cleaned HTML string to normalized markdown text (in-memory)
     
-    os.makedirs(os.path.dirname(output_md_file_path), exist_ok=True)
-    with open(output_md_file_path, "w", encoding="utf-8") as f:
-        f.write(normalized_md)
+    Args:
+        cleaned_html_content: Cleaned HTML string from clean_wikipedia_html()
+    
+    Returns:
+        Normalized markdown text as string (in-memory, not saved to disk)
+    """
+    soup = BeautifulSoup(cleaned_html_content, "html.parser")
+    md = ""
 
-    print(f"Đã lưu markdown đã chuẩn hóa vào: {output_md_file_path}")
+    # Process headers
+    for h in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+        level = int(h.name[1])
+        header_text = h.get_text(strip=True)
+        if header_text:
+            md += f"{'#' * level} {header_text}\n\n"
 
-    return output_md_file_path
+    # Process paragraphs
+    for p in soup.find_all('p'):
+        text = p.get_text(strip=True)
+        if text:
+            md += f"{text}\n\n"
 
+    # Process lists
+    for ul in soup.find_all('ul'):
+        for li in ul.find_all('li', recursive=False):
+            text = li.get_text(strip=True)
+            if text:
+                md += f"- {text}\n"
+        md += "\n"
 
-def extract_text_from_html_file(html_file_path: str) -> str:
-    """Extract plain text from HTML as a fallback when markdown conversion returns empty content."""
-    with open(html_file_path, "r", encoding="utf-8") as f:
-        soup = BeautifulSoup(f, "html.parser")
+    for ol in soup.find_all('ol'):
+        for i, li in enumerate(ol.find_all('li', recursive=False), 1):
+            text = li.get_text(strip=True)
+            if text:
+                md += f"{i}. {text}\n"
+        md += "\n"
 
-    content = soup.find("div", class_="mw-parser-output") or soup.find("body") or soup
-    text = content.get_text("\n", strip=True)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    # Process tables
+    for table in soup.find_all('table'):
+        rows = table.find_all('tr')
+        if rows:
+            header_cells = rows[0].find_all(['th', 'td'])
+            md += "| " + " | ".join(cell.get_text(strip=True) for cell in header_cells) + " |\n"
+            md += "|" + "|".join(["---"] * len(header_cells)) + "|\n"
+            
+            for row in rows[1:]:
+                cells = row.find_all(['th', 'td'])
+                md += "| " + " | ".join(cell.get_text(strip=True) for cell in cells) + " |\n"
+            md += "\n"
 
+    # Process blockquotes
+    for blockquote in soup.find_all('blockquote'):
+        text = blockquote.get_text(strip=True)
+        if text:
+            md += f"> {text}\n\n"
 
-def read_text_file_fallback(file_path: str) -> str:
-    """Read text from file using tolerant UTF-8 decoding as a last-resort fallback."""
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        text = f.read()
-    text = re.sub(r"\s+", " ", text or "").strip()
-    return text
+    # Process code blocks
+    for code_block in soup.find_all('pre'):
+        code = code_block.get_text(strip=True)
+        if code:
+            md += f"```\n{code}\n```\n\n"
+
+    # Normalize markdown
+    normalized_md = normalize_markdown(md)
+    
+    print(f"✅ Converted HTML to markdown (in-memory)")
+    return normalized_md
 
 
 # Tạo database session cho worker
@@ -302,7 +331,8 @@ def process_document(
     batch_id: str | None = None,
     is_summary: bool = False,
     summary_id: str | None = None,
-    target_document_ids: list | None = None
+    target_document_ids: list | None = None,
+    job = None  # Optional RQ Job object for progress tracking
 ):
     """
     Worker function to process complete document: ingest + chunk + embeddings
@@ -359,48 +389,57 @@ def process_document(
         if file_extension in ['.md', '.markdown']:
             # File markdown - sử dụng trực tiếp
             print(f"📝 Detected Markdown file: {file_path}")
-            md_file_path = file_path
+            
+            # Load markdown content
+            step_start = time.time()
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read().strip()
+            step_duration = time.time() - step_start
+            print(f"✅ Loaded markdown file ({len(text)} chars)")
+            print(f"⏱️  File Loading took: {step_duration:.2f}s")
             
             # Update document metadata
             if document:
                 meta_data = document.meta_data or {}  # type: ignore[assignment]
                 if isinstance(meta_data, dict):
-                    meta_data['processed_file'] = md_file_path
                     meta_data['original_file'] = file_path
                     meta_data['file_type'] = 'markdown'
                     document.meta_data = meta_data  # type: ignore[assignment]
                 db.commit()
             
-            print(f"✅ Using markdown file directly (no conversion needed)")
             timing_stats['phases']['ingest_total'] = time.time() - phase_start
+            print(f"✅ Ingest phase completed")
+            print(f"⏱️  Total INGEST time: {timing_stats['phases']['ingest_total']:.2f}s")
             
         elif file_extension in ['.html', '.htm']:
             # File HTML - cần clean và convert
             print(f"🌐 Detected HTML file: {file_path}")
             
-            # Bước 1: Clean HTML
+            # Bước 1: Clean HTML (returns HTML string, not file path)
             step_start = time.time()
             print(f"🧹 Cleaning HTML: {file_path}")
-            cleaned_file_path = clean_wikipedia_html(file_path)
+            cleaned_html_string = clean_wikipedia_html(file_path)
             step_duration = time.time() - step_start
-            print(f"✅ Cleaned HTML: {cleaned_file_path}")
+            print(f"✅ Cleaned HTML (in-memory)")
             print(f"⏱️  HTML Cleaning took: {step_duration:.2f}s")
             timing_stats['phases']['html_cleaning'] = step_duration
             
-            # Bước 2: Convert to Markdown
+            # Bước 2: Convert to Markdown (returns markdown string, not file path)
             step_start = time.time()
-            print(f"📝 Converting to Markdown: {cleaned_file_path}")
-            md_file_path = convert_html_to_normalized_md(cleaned_file_path)
+            print(f"📝 Converting to Markdown (in-memory)")
+            md_string = convert_html_to_normalized_md(cleaned_html_string)
             step_duration = time.time() - step_start
-            print(f"✅ Converted to Markdown: {md_file_path}")
+            print(f"✅ Converted to Markdown (in-memory)")
             print(f"⏱️  Markdown Conversion took: {step_duration:.2f}s")
             timing_stats['phases']['markdown_conversion'] = step_duration
+            
+            # Store markdown string for later use
+            text = md_string
             
             # Bước 3: Update document metadata (skip for summary)
             if document:
                 meta_data = document.meta_data or {}  # type: ignore[assignment]
                 if isinstance(meta_data, dict):
-                    meta_data['processed_file'] = md_file_path
                     meta_data['original_file'] = file_path
                     meta_data['file_type'] = 'html'
                     document.meta_data = meta_data  # type: ignore[assignment]
@@ -412,79 +451,29 @@ def process_document(
             print(f"⏱️  Total INGEST time: {phase_duration:.2f}s")
             
         else:
-            # Loại file khác - thử convert trực tiếp bằng MarkItDown
+            # Loại file khác - read trực tiếp
             print(f"📄 Detected file type: {file_extension}")
             
             step_start = time.time()
-            print(f"📝 Converting to Markdown: {file_path}")
-            md_file_path = convert_html_to_normalized_md(file_path)
+            print(f"📖 Reading file: {file_path}")
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read().strip()
             step_duration = time.time() - step_start
-            print(f"✅ Converted to Markdown: {md_file_path}")
-            print(f"⏱️  Conversion took: {step_duration:.2f}s")
-            timing_stats['phases']['markdown_conversion'] = step_duration
+            print(f"✅ Read file ({len(text)} chars)")
+            print(f"⏱️  File Reading took: {step_duration:.2f}s")
+            timing_stats['phases']['file_reading'] = step_duration
             
             if document:
                 meta_data = document.meta_data or {}  # type: ignore[assignment]
                 if isinstance(meta_data, dict):
-                    meta_data['processed_file'] = md_file_path
                     meta_data['original_file'] = file_path
                     meta_data['file_type'] = file_extension.lstrip('.')
                     document.meta_data = meta_data  # type: ignore[assignment]
                 db.commit()
             
             timing_stats['phases']['ingest_total'] = time.time() - phase_start
-        
-        # Load markdown content (needed for both paths)
-        step_start = time.time()
-        with open(md_file_path, 'r', encoding='utf-8') as f:
-            text = f.read()
-        text = text.strip()
-
-        # Some pages can produce empty markdown via converter.
-        # For summary jobs, fallback to HTML extraction and then raw text loading.
-        if is_summary and not text and file_extension in ['.html', '.htm']:
-            fallback_candidates = [file_path]
-            if 'cleaned_file_path' in locals():
-                fallback_candidates.append(cleaned_file_path)
-
-            for candidate in fallback_candidates:
-                try:
-                    fallback_text = extract_text_from_html_file(candidate)
-                    if fallback_text:
-                        text = fallback_text
-                        print(f"⚠️ Markdown conversion produced empty text; used HTML fallback from: {candidate}")
-                        break
-                except Exception as fallback_error:
-                    print(f"⚠️ HTML fallback failed for {candidate}: {fallback_error}")
-
-        if is_summary and not text:
-            raw_candidates = [file_path]
-            if 'md_file_path' in locals():
-                raw_candidates.append(md_file_path)
-            if 'cleaned_file_path' in locals():
-                raw_candidates.append(cleaned_file_path)
-
-            seen = set()
-            for candidate in raw_candidates:
-                if candidate in seen:
-                    continue
-                seen.add(candidate)
-                try:
-                    fallback_text = read_text_file_fallback(candidate)
-                    if fallback_text:
-                        text = fallback_text
-                        print(f"⚠️ Used raw text fallback from: {candidate}")
-                        break
-                except Exception as fallback_error:
-                    print(f"⚠️ Raw text fallback failed for {candidate}: {fallback_error}")
-
-        if not text:
-            raise ValueError("Nội dung sau khi ingest rỗng, không thể tạo embedding/chunks")
-
-        step_duration = time.time() - step_start
-        print(f"📄 Loaded file: {md_file_path} ({len(text)} chars)")
-        print(f"⏱️  File Loading took: {step_duration:.2f}s")
-        timing_stats['phases']['file_loading'] = step_duration
+            print(f"✅ Ingest phase completed")
+            print(f"⏱️  Total INGEST time: {timing_stats['phases']['ingest_total']:.2f}s")
         
         # ========================================================================
         # BRANCH: Process as Summary Document or Regular Document
@@ -553,7 +542,6 @@ def process_document(
                     bm25_text=get_segmentation_service().segment(text),
                     status='completed',
                     meta_data={
-                        'processed_file': md_file_path,
                         'original_file': file_path,
                         'processing_time': timing_stats
                     }
@@ -655,7 +643,7 @@ def process_document(
         
         step_start = time.time()
         chunking_service = get_chunking_service(chunk_size, chunk_overlap)
-        chunking_result = chunking_service.chunk_markdown(text, md_file_path)
+        chunking_result = chunking_service.chunk_markdown(text, document_id)
         parent_chunks = chunking_result['parent_chunks']
         child_chunks = chunking_result['child_chunks']
         step_duration = time.time() - step_start

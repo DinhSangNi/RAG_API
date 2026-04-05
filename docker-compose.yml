@@ -1,15 +1,95 @@
 version: "3.8"
 
 services:
+  # Redis - for task queue
+  redis:
+    image: redis:7-alpine
+    container_name: rag_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # FastAPI application (connects to remote PostgreSQL)
   api:
     build: .
     container_name: rag_api
+    depends_on:
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgre:2402@23.101.8.7:5432/ragdb
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-models/gemini-embedding-001}
       DIMENSION_OF_MODEL: ${DIMENSION_OF_MODEL:-768}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      CLOUDINARY_CLOUD_NAME: do65kca8j
+      CLOUDINARY_API_KEY: 278929117957951
+      CLOUDINARY_API_SECRET: Ve2Gss-i1gLiv8eLHn8eab-9yvA
     ports:
       - "8000:8000"
+    volumes:
+      - ./data/uploads:/app/data/uploads  # Only temp uploads
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+
+  # RQ Worker 1 (optimized build)
+  worker1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: rag_worker_1
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgre:2402@23.101.8.7:5432/ragdb
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-models/gemini-embedding-001}
+      DIMENSION_OF_MODEL: ${DIMENSION_OF_MODEL:-768}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      CLOUDINARY_CLOUD_NAME: do65kca8j
+      CLOUDINARY_API_KEY: 278929117957951
+      CLOUDINARY_API_SECRET: Ve2Gss-i1gLiv8eLHn8eab-9yvA
+    volumes:
+      - ./data/uploads:/app/data/uploads  # Only temp uploads
+    command: python worker1.py
+    restart: unless-stopped
+
+  # RQ Worker 2 (optimized build)
+  worker2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: rag_worker_2
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgre:2402@23.101.8.7:5432/ragdb
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-models/gemini-embedding-001}
+      DIMENSION_OF_MODEL: ${DIMENSION_OF_MODEL:-768}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      CLOUDINARY_CLOUD_NAME: do65kca8j
+      CLOUDINARY_API_KEY: 278929117957951
+      CLOUDINARY_API_SECRET: Ve2Gss-i1gLiv8eLHn8eab-9yvA
+    volumes:
+      - ./data/uploads:/app/data/uploads  # Only temp uploads
+    command: python worker2.py
+    restart: unless-stopped
+
+volumes:
+  redis_data:

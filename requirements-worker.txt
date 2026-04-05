@@ -1,15 +1,17 @@
-# FastAPI và dependencies
-dependency-injector
-fastapi
-uvicorn[standard]
-pydantic
-pydantic-settings
-python-multipart
+# Worker-specific dependencies (optimized)
+# Only includes packages needed for job processing
+
+# Queue and Task Processing
+redis
+rq
 
 # Database
 sqlalchemy
 psycopg2-binary
 pgvector
+
+# Cloud Storage
+cloudinary
 
 # LangChain và AI
 langchain
@@ -26,14 +28,3 @@ markitdown
 
 # Vietnamese NLP
 vncorenlp
-
-# Queue and Task Processing
-redis
-rq
-
-# Cloud Storage
-cloudinary
-
-# Testing
-pytest
-httpx
