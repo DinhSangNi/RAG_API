@@ -29,7 +29,9 @@ from app.dependencies import get_search_service, get_rag_service
 from app.queue.service import RedisQueueService, get_queue_service
 from app.queue.models import UploadTask, EditTask
 from app.services.rag_service import RAGService
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
 
@@ -179,11 +181,12 @@ async def upload_files(
     queue_service = get_queue_service()
 
     try:
-        print(f"\n{'='*70}")
-        print(f"📦 BATCH UPLOAD QUEUED")
-        print(f"{'='*70}")
-        print(f"Batch ID: {batch_id}")
-        print(f"Files: {len(files)}")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"📦 BATCH UPLOAD QUEUED")
+        logger.info(f"{'='*70}")
+        logger.info(f"Batch ID: {batch_id}")
+        logger.info(f"Files count: {len(files)}")
+        logger.info(f"Temp upload directory: {settings.TEMP_UPLOAD_DIR}")
 
         for file in files:
             if not file.filename:
@@ -198,7 +201,9 @@ async def upload_files(
             with open(temp_file_path, "wb") as f:
                 f.write(contents)
 
-            print(f"✅ Saved temp file: {temp_file_name} ({len(contents)} bytes)")
+            logger.info(f"  ✅ Saved to temp storage: {temp_file_name}")
+            logger.info(f"     Size: {len(contents)} bytes")
+            logger.info(f"     Path: {temp_file_path}")
 
             # Create upload task
             task_id = str(uuid.uuid4())
@@ -215,8 +220,11 @@ async def upload_files(
                 }
             )
             
-            # Push to queue
+            # Push to queue and verify
+            logger.info(f"  🔄 Pushing to Redis queue...")
             queue_service.push_upload_task(task.to_dict())
+            logger.info(f"  ✅ Task pushed to Redis: {task_id}")
+            logger.info(f"     Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT} db={settings.REDIS_DB}")
             
             job_response = UploadJobResponse(
                 job_id=task_id,
@@ -226,10 +234,11 @@ async def upload_files(
             )
             jobs.append(job_response)
 
-        print(f"\n{'='*70}")
-        print(f"✅ BATCH QUEUED FOR PROCESSING")
-        print(f"{'='*70}")
-        print(f"Total files queued: {len(jobs)}\n")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"✅ BATCH QUEUED FOR PROCESSING")
+        logger.info(f"{'='*70}")
+        logger.info(f"Total files queued: {len(jobs)}")
+        logger.info(f"Batch ID: {batch_id}\n")
 
         return BatchUploadResponse(
             batch_id=batch_id,
@@ -240,7 +249,7 @@ async def upload_files(
 
     except Exception as e:
         error_msg = f"Upload queue failed: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error(f"❌ {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -346,16 +355,16 @@ async def edit_document(
         EditDocumentResponse with task ID
     """
     try:
-        print(f"\n{'='*70}")
-        print(f"✏️ QUEUING DOCUMENT EDIT: {document_id}")
-        print(f"{'='*70}")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"✏️ QUEUING DOCUMENT EDIT: {document_id}")
+        logger.info(f"{'='*70}")
         
         # Verify document exists
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
         
-        print(f"✅ Document found: {document.file_name}")
+        logger.info(f"✅ Document found: {document.file_name}")
         
         # Save uploaded file to temp directory
         os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
@@ -365,7 +374,9 @@ async def edit_document(
         contents = await file.read()
         with open(temp_file_path, "wb") as f:
             f.write(contents)
-        print(f"✅ Saved temp file: {temp_file_name}")
+        logger.info(f"✅ Saved to temp storage: {temp_file_name}")
+        logger.info(f"   Size: {len(contents)} bytes")
+        logger.info(f"   Path: {temp_file_path}")
         
         # Create edit task
         task_id = str(uuid.uuid4())
@@ -379,13 +390,16 @@ async def edit_document(
             metadata={'edited_at': str(datetime.now())}
         )
         
-        # Push to queue
+        # Push to queue and verify
+        logger.info(f"🔄 Pushing to Redis queue...")
         queue_service = get_queue_service()
         queue_service.push_edit_task(task.to_dict())
+        logger.info(f"✅ Task pushed to Redis: {task_id}")
+        logger.info(f"   Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT} db={settings.REDIS_DB}")
         
-        print(f"\n{'='*70}")
-        print(f"✅ DOCUMENT QUEUED FOR EDITING")
-        print(f"{'='*70}\n")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"✅ DOCUMENT QUEUED FOR EDITING")
+        logger.info(f"{'='*70}\n")
         
         return EditDocumentResponse(
             document_id=document_id,
@@ -400,5 +414,5 @@ async def edit_document(
         raise
     except Exception as e:
         error_msg = f"Failed to queue edit: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error(f"❌ {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)

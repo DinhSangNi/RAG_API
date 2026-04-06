@@ -78,6 +78,27 @@ async def _startup():
     logger.info(f"  📦 TEMP_UPLOAD_DIR: {settings.TEMP_UPLOAD_DIR}")
     logger.info(f"  📦 WEBAPP_STORAGE_HOME: {settings.WEBAPP_STORAGE_HOME}")
     
+    # Check Redis connection
+    logger.info("\n🔴 Checking Redis connection...")
+    try:
+        from app.queue.service import get_queue_service
+        queue_service = get_queue_service()
+        # Test connection by pinging
+        ping_result = queue_service._redis.ping()
+        if ping_result:
+            logger.info(f"  ✅ Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT} (db={settings.REDIS_DB})")
+            # Get Redis info
+            try:
+                info = queue_service._redis.info()
+                logger.info(f"  📊 Redis info: version={info.get('redis_version', 'unknown')}, clients={info.get('connected_clients', 'unknown')}")
+            except:
+                pass
+        else:
+            logger.error("  ❌ Redis PING failed")
+    except Exception as e:
+        logger.error(f"  ❌ Redis connection failed: {str(e)}")
+        logger.error(f"     Make sure Redis is running at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+    
     # Warm up stopwords
     logger.info("\n🔥 Warming up services...")
     _warm_up_stopwords()
@@ -96,9 +117,9 @@ def _warm_up_stopwords():
         db = SessionLocal()
         SearchService(db).get_stopwords()
         db.close()
-        print("✅ Stopword cache warmed up")
+        logger.info("✅ Stopword cache warmed up")
     except Exception as e:
-        print(f"⚠️ Stopword warm-up failed (will retry on first request): {e}")
+        logger.warning(f"⚠️ Stopword warm-up failed (will retry on first request): {e}")
 
 
 @app.get("/")
