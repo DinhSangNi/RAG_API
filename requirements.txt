@@ -19,5 +19,8 @@ google-generativeai
 # Queue
 redis
 
+# Dependency Injection
+dependency-injector
+
 # Utilities
 python-dotenv

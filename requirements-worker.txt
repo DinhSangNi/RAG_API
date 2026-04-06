@@ -16,6 +16,9 @@ numpy
 # Queue
 redis
 
+# Dependency Injection
+dependency-injector
+
 # File processing
 python-dotenv
 
