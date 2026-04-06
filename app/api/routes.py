@@ -28,6 +28,7 @@ from app.api.schemas import (
 from app.dependencies import get_search_service, get_rag_service
 from app.queue.service import RedisQueueService, get_queue_service
 from app.queue.models import UploadTask, EditTask
+from app.services.rag_service import RAGService
 
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
