@@ -22,5 +22,8 @@ redis
 # Dependency Injection
 dependency-injector
 
+# Vietnamese NLP
+vncorenlp
+
 # Utilities
 python-dotenv
