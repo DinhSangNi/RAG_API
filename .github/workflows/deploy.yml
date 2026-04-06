@@ -43,48 +43,23 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Extract metadata (tags, labels) for Worker 1
-        id: meta-worker1
+      - name: Extract metadata (tags, labels) for Docker - Worker
+        id: meta-worker
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.REGISTRY_URL }}/rag-api-worker1
+          images: ${{ secrets.REGISTRY_URL }}/rag-worker
           tags: |
             type=ref,event=branch
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image - Worker 1
+      - name: Build and push Docker image - Worker
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.worker
-          build-args: |
-            WORKER_FILE=worker1.py
           push: true
-          tags: ${{ steps.meta-worker1.outputs.tags }}
-          labels: ${{ steps.meta-worker1.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Extract metadata (tags, labels) for Worker 2
-        id: meta-worker2
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.REGISTRY_URL }}/rag-api-worker2
-          tags: |
-            type=ref,event=branch
-            type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image - Worker 2
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.worker
-          build-args: |
-            WORKER_FILE=worker2.py
-          push: true
-          tags: ${{ steps.meta-worker2.outputs.tags }}
-          labels: ${{ steps.meta-worker2.outputs.labels }}
+          tags: ${{ steps.meta-worker.outputs.tags }}
+          labels: ${{ steps.meta-worker.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

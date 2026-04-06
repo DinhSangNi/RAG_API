@@ -1,19 +1,11 @@
-# Worker-specific dependencies (optimized)
-# Only includes packages needed for job processing
-
-# Queue and Task Processing
-redis
-rq
+# Worker dependencies (background task processing)
 
 # Database
 sqlalchemy
 psycopg2-binary
 pgvector
 
-# Cloud Storage
-cloudinary
-
-# LangChain và AI
+# LLM & Embeddings
 langchain
 langchain-community
 langchain-google-genai
@@ -21,10 +13,17 @@ langchain-text-splitters
 google-generativeai
 numpy
 
-# Utilities
+# Queue
+redis
+
+# File processing
 python-dotenv
-beautifulsoup4
-markitdown
 
 # Vietnamese NLP
 vncorenlp
+
+# Cloud Storage
+cloudinary
+
+# Utilities
+beautifulsoup4

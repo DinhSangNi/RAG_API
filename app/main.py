@@ -49,6 +49,9 @@ app.add_middleware(
 # Include API routes
 app.include_router(router)
 
+# Force regeneration of OpenAPI schema to fix file upload UI
+app.openapi_schema = None
+
 
 @app.on_event("startup")
 async def _startup():
@@ -101,8 +104,7 @@ async def root():
         "message": "RAG Service API",
         "version": settings.APP_VERSION,
         "docs": "/docs",
-        "queue_name": settings.QUEUE_NAME,
-        "redis_url": settings.REDIS_URL
+        "status": "synchronous processing"
     }
 
 
@@ -111,25 +113,10 @@ async def health_check():
     """
     Health check endpoint
     """
-    from redis import Redis
-    
-    redis_ok = False
-    try:
-        redis_conn = Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=settings.REDIS_DB,
-            decode_responses=True
-        )
-        redis_conn.ping()
-        redis_ok = True
-    except Exception as e:
-        logger.warning(f"Redis health check failed: {e}")
-    
     return {
         "status": "healthy",
         "service": settings.APP_NAME,
-        "redis": "connected" if redis_ok else "disconnected"
+        "processing": "synchronous"
     }
 
 

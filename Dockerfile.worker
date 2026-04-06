@@ -2,14 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Accept worker file as build argument
-ARG WORKER_FILE=worker1.py
-
-# Install minimal system dependencies (Java only for VnCoreNLP)
-RUN apt-get update && apt-get install -y \
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    postgresql-client \
     default-jre-headless \
     wget \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Pre-download VnCoreNLP JAR and word-segmenter models
 RUN mkdir -p /app/vncorenlp/models/wordsegmenter \
@@ -20,26 +20,21 @@ RUN mkdir -p /app/vncorenlp/models/wordsegmenter \
     && wget -q -O /app/vncorenlp/models/wordsegmenter/wordsegmenter.rdr \
     https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/wordsegmenter.rdr
 
-# Copy worker-specific requirements only
+# Copy requirements
 COPY requirements-worker.txt .
 
-# Install Python dependencies (optimized for workers)
-RUN pip install --no-cache-dir -r requirements-worker.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements-worker.txt \
+    && rm -rf ~/.cache/pip
 
-# Copy only necessary app files for workers
-COPY app/config.py app/
-COPY app/__init__.py app/
-COPY app/database/ app/database/
-COPY app/services/ app/services/
-COPY app/workers/ app/workers/
+# Copy application code
+COPY . .
 
-# Copy worker startup scripts
-COPY worker1.py .
-COPY worker2.py .
-
-# Create data directory (only uploads needed)
+# Create data directory
 RUN mkdir -p /app/data/uploads
 
-# No port exposure needed for workers
-# Use shell form CMD to support variable substitution
-CMD /bin/sh -c "python $WORKER_FILE"
+# Set Python to run in unbuffered mode
+ENV PYTHONUNBUFFERED=1
+
+# Run worker
+CMD ["python", "worker.py"]

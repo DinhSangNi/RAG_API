@@ -82,16 +82,15 @@ class RAGService:
             ("human", """Bạn là trợ lý AI. Trả lời câu hỏi dựa trên CONTEXT được cung cấp.
 
 NGUYÊN TẮC:
-1) Trả lời dựa trên thông tin trong CONTEXT. Bạn có thể SUY LUẬN HỢP LÝ từ các sự kiện liên quan trong CONTEXT.
-2) Nếu CONTEXT không có đủ thông tin để trả lời → trả lời đúng câu: "Tôi không tìm thấy thông tin này trong tài liệu."
+1) CHỈ trả lời dựa trên thông tin trong CONTEXT.
+2) Nếu CONTEXT không có đủ thông tin để trả lời → trả lời: "Tôi không tìm thấy thông tin này trong tài liệu."
 3) Trả lời NGẮN GỌN, CHÍNH XÁC, bằng tiếng Việt
-4) Nếu trong CONTEXT có nhiều tên gọi (bí danh / tên khai sinh / tên khác / tên húy) của cùng một người, hãy coi chúng là 1 thực thể khi suy luận.
-5) Khi có các sự kiện xảy ra cùng thời điểm hoặc liên quan trực tiếp, hãy kết hợp chúng để trả lời.
+4) Nếu có nhiều tên gọi (bí danh/tên khác) của cùng một người, coi chúng là 1 thực thể.
+5) Kết hợp các sự kiện liên quan trực tiếp để trả lời.
 6) Không bịa đặt thông tin không có trong CONTEXT.
-7) Phát hiện GIẢ ĐỊNH SAI: Nếu câu hỏi chứa giả định hoặc thông tin không đúng sự thật (ví dụ: gán sự kiện/hành động cho nhân vật không liên quan), hãy:
-   a) Xác nhận rõ: "Không, [giả định đó] là không đúng."
-   b) Giải thích ngắn gọn dựa trên CONTEXT tại sao giả định đó sai.
-   c) Cung cấp thông tin đúng nếu CONTEXT có đủ dữ liệu.
+7) Phát hiện GIẢ ĐỊNH SAI: nếu câu hỏi chứa giả định sai, hãy xác nhận đó là sai và giải thích.
+
+
 
 CONTEXT:
 {context}
@@ -154,156 +153,6 @@ TRẢ LỜI:"""),
         
         return "\n\n".join(formatted)
     
-    def _format_summary_docs(self, docs: List[Dict[str, Any]]) -> str:
-        """Format summary documents for context"""
-        if not docs:
-            return "Không tìm thấy thông tin liên quan trong tài liệu."
-        
-        formatted = []
-        for i, doc in enumerate(docs, 1):
-            content = doc.get('summary_content', '')
-            formatted.append(f"--- Tóm tắt {i} ---\n{content}")
-        
-        return "\n\n".join(formatted)
-
-    ## Trích xuất thực thể, bí danh, từ khóa từ ngữ cảnh bằng LLM
-    def _extract_entity_info(
-        self, 
-        question: str, 
-        docs: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        context = self._format_docs(docs[:min(len(docs), 8)])
-        
-        try:
-            raw = self.alias_chain.invoke({
-                "question": question, 
-                "context": context
-            })
-            
-            # Debug output
-            if not raw or not raw.strip():
-                print(f"⚠️ Entity extraction: LLM returned empty response")
-                return {"entity": "", "aliases": [], "keywords": []}
-            
-            # Clean potential markdown code blocks
-            raw = raw.strip()
-            if raw.startswith("```"):
-                # Remove markdown code fence
-                lines = raw.split("\n")
-                raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
-                raw = raw.replace("```json", "").replace("```", "").strip()
-            
-            # Try to parse JSON
-            data = json.loads(raw)
-            entity = (data.get("entity") or "").strip()
-            aliases = data.get("aliases") or []
-            keywords = data.get("keywords") or []
-            
-            # Normalize
-            aliases = [a.strip() for a in aliases if isinstance(a, str) and a.strip()]
-            keywords = [k.strip() for k in keywords if isinstance(k, str) and k.strip()]
-            
-            # Remove duplicates
-            aliases = list(dict.fromkeys(aliases))
-            keywords = list(dict.fromkeys(keywords))
-            
-            return {
-                "entity": entity,
-                "aliases": aliases,
-                "keywords": keywords
-            }
-        except json.JSONDecodeError as e:
-            print(f"⚠️ Entity extraction JSON parse error: {e}")
-            print(f"📝 Raw output: {raw[:200] if raw else '(empty)'}")
-            return {"entity": "", "aliases": [], "keywords": []}
-        except Exception as e:
-            print(f"⚠️ Entity extraction failed: {e}")
-            return {"entity": "", "aliases": [], "keywords": []}
-    
-    def _replace_entity_in_question(self, question: str, entity: str, replacement: str) -> str:
-        """Replace entity in question with replacement, preserving sentence structure."""
-        return re.sub(re.escape(entity), replacement, question, flags=re.IGNORECASE).strip()
-
-    def _entity_in_question(self, question: str, entity: str) -> bool:
-        return bool(entity and re.search(re.escape(entity), question, re.IGNORECASE))
-
-    def _make_variants(
-        self, 
-        question: str, 
-        info: Dict[str, Any]
-    ) -> List[str]:
-        """Generate query variants from entity/aliases/keywords (excluding original query)"""
-        entity = info.get("entity", "").strip()
-        aliases = info.get("aliases") or []
-        keywords = info.get("keywords") or []
-        
-        # Filter stopwords to build a keyword-only core (no entity tokens)
-        stop = self.search_service.get_stopwords()
-        q_tokens = self._tokenize_vi(question)
-        entity_tokens = set(self._tokenize_vi(entity)) if entity else set()
-        q_core = [t for t in q_tokens if t not in stop and t not in entity_tokens]
-        core_text = " ".join(q_core).strip()
-        
-        # Start with empty list - don't include original question to avoid duplication
-        # since first_pass_chunks already searches with original query
-        variants = []
-        
-        # Alias-based variants: replace entity in question to preserve grammar
-        # Filter out aliases that are the same as entity (case-insensitive)
-        entity_lower = entity.lower() if entity else ""
-        valid_aliases = [a for a in aliases if a.lower() != entity_lower and a.lower().strip()]
-        
-        for alias in valid_aliases[:self.variant_count]:
-            if self._entity_in_question(question, entity):
-                replaced = self._replace_entity_in_question(question, entity, alias)
-                variants.append(replaced)
-            else:
-                variants.append(f"{alias} {question}")
-        
-        # Keyword-based variant: entity + non-entity core keywords
-        if entity and keywords:
-            variants.append(f"{entity} " + " ".join(keywords[:8]))
-        elif keywords and core_text:
-            variants.append(core_text + " " + " ".join(keywords[:8]))
-        elif keywords:
-            variants.append(" ".join(keywords[:8]))
-        
-        # Dedup and filter out the original question
-        deduped = []
-        seen = set()
-        question_lower = question.lower()
-        for v in variants:
-            v2 = v.strip()
-            if not v2 or v2.lower() in seen or v2.lower() == question_lower:
-                continue
-            seen.add(v2.lower())
-            deduped.append(v2)
-        
-        return deduped[:self.variant_count]
-
-    def _rrf_fuse(
-        self, 
-        list_of_results: List[List[Dict[str, Any]]], 
-        rrf_k: int = 60, 
-        top_k: int = 10
-    ) -> List[Dict[str, Any]]:
-        """Reciprocal Rank Fusion for multiple result lists"""
-        scores: Dict[int, Dict[str, Any]] = {}
-        
-        for results in list_of_results:
-            for rank, doc in enumerate(results, start=1):
-                doc_id = doc['id']
-                scores.setdefault(doc_id, {'doc': doc, 'score': 0.0})
-                scores[doc_id]['score'] += 1.0 / (rrf_k + rank)
-        
-        ranked = sorted(scores.values(), key=lambda x: x['score'], reverse=True)
-        fused = [x['doc'] for x in ranked[:top_k]]
-        
-        # Add fused scores
-        for i, doc in enumerate(fused):
-            doc['fused_score'] = ranked[i]['score']
-        
-        return fused
     
     def _get_parent_chunks_context(
         self, 
@@ -687,12 +536,36 @@ Trả lời:""")
                     'h1': 'Summary',
                     'h2': ''
                 })
+            # Log context and question being sent to LLM
+            formatted_context = self._format_docs(formatted_docs)
+            print(f"\n{'='*80}")
+            print(f"📤 SENDING TO LLM [trace={trace}] | Source: {source}")
+            print(f"{'='*80}")
+            print(f"❓ QUESTION:\n{question}")
+            print(f"\n📝 CONTEXT:\n{formatted_context}")
+            print(f"{'='*80}\n")
             answer = self.rag_chain.invoke({"docs": formatted_docs, "question": question})
         elif source == 'parent_chunks_from_children':
             # Use parent chunks (already in correct format)
+            # Log context and question being sent to LLM
+            formatted_context = self._format_docs(docs)
+            print(f"\n{'='*80}")
+            print(f"📤 SENDING TO LLM [trace={trace}] | Source: {source}")
+            print(f"{'='*80}")
+            print(f"❓ QUESTION:\n{question}")
+            print(f"\n📝 CONTEXT:\n{formatted_context}")
+            print(f"{'='*80}\n")
             answer = self.rag_chain.invoke({"docs": docs, "question": question})
         else:
             # Use child chunks or legacy chunks
+            # Log context and question being sent to LLM
+            formatted_context = self._format_docs(docs)
+            print(f"\n{'='*80}")
+            print(f"📤 SENDING TO LLM [trace={trace}] | Source: {source}")
+            print(f"{'='*80}")
+            print(f"❓ QUESTION:\n{question}")
+            print(f"\n📝 CONTEXT:\n{formatted_context}")
+            print(f"{'='*80}\n")
             answer = self.rag_chain.invoke({"docs": docs, "question": question})
         
         answer = (answer or "").strip()

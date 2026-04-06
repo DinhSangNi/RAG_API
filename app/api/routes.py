@@ -3,34 +3,31 @@ API Routes for RAG Service
 Handles document processing, search, and chat endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import re
 import os
 import uuid
-from pathlib import Path
-from rq import Queue
-from redis import Redis
+import hashlib
+from datetime import datetime
 
 from app.database import get_db
 from app.database.models import Document, ChildChunk, SummaryDocument
 from app.config import settings
 from app.api.schemas import (
     DocumentResponse,
-    SearchRequest,
-    SearchResult,
-    SearchResponse,
     ChatRequest,
     ChatResponse,
     UploadJobResponse,
     BatchUploadResponse,
     JobStatusResponse,
+    EditDocumentRequest,
+    EditDocumentResponse,
 )
 from app.dependencies import get_search_service, get_rag_service
-from app.services.search_service import SearchService
-from app.services.rag_service import RAGService
-from app.workers.queue_job import index_document_job
+from app.queue.service import RedisQueueService, get_queue_service
+from app.queue.models import UploadTask, EditTask
 
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
@@ -147,46 +144,28 @@ async def rag_chat(
 
 
 # ============================================================================
-# UPLOAD & QUEUE ENDPOINTS
+# UPLOAD & INDEXING ENDPOINTS (Asynchronous - Queue-based)
 # ============================================================================
-
-# Initialize Redis connection and Queue
-def get_redis_connection():
-    """Get Redis connection"""
-    return Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        db=settings.REDIS_DB,
-        decode_responses=True
-    )
-
-
-def get_queue():
-    """Get RQ Queue instance"""
-    redis_conn = get_redis_connection()
-    return Queue(settings.QUEUE_NAME, connection=redis_conn)
-
 
 @router.post("/upload", response_model=BatchUploadResponse)
 async def upload_files(
     files: List[UploadFile] = File(...),
-    source_type: str = "local"
+    source_type: str = Form(default="local"),
+    db: Session = Depends(get_db)
 ):
     """
-    Upload multiple files for batch processing
-
-    Files are saved to temporary directory and jobs are queued for processing.
-    Each job will:
-    1. Upload file to Cloudinary
-    2. Process document: chunking, embedding, segmentation
-    3. Save to database
+    Upload files to queue for background processing
+    
+    Files are saved temporarily and pushed to Redis queue.
+    Worker will process them: upload to Cloudinary, chunk, embed, and index.
 
     Args:
         files: List of files to upload
         source_type: Source type (local, cloud, wikipedia)
+        db: Database session
 
     Returns:
-        BatchUploadResponse with list of job IDs
+        BatchUploadResponse with task IDs instead of processed results
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
@@ -196,11 +175,11 @@ async def upload_files(
 
     batch_id = str(uuid.uuid4())
     jobs = []
-    queue = get_queue()
+    queue_service = get_queue_service()
 
     try:
         print(f"\n{'='*70}")
-        print(f"📦 BATCH UPLOAD STARTED")
+        print(f"📦 BATCH UPLOAD QUEUED")
         print(f"{'='*70}")
         print(f"Batch ID: {batch_id}")
         print(f"Files: {len(files)}")
@@ -214,128 +193,212 @@ async def upload_files(
             temp_file_path = os.path.join(settings.TEMP_UPLOAD_DIR, temp_file_name)
 
             # Save uploaded file
+            contents = await file.read()
             with open(temp_file_path, "wb") as f:
-                contents = await file.read()
                 f.write(contents)
 
             print(f"✅ Saved temp file: {temp_file_name} ({len(contents)} bytes)")
 
-            # Queue job
-            job = queue.enqueue(
-                index_document_job,
-                temp_file_path=temp_file_path,
-                source_type=source_type,
+            # Create upload task
+            task_id = str(uuid.uuid4())
+            task = UploadTask(
+                task_id=task_id,
+                file_path=temp_file_path,
                 file_name=file.filename,
+                source_type=source_type,
                 chunk_size=settings.CHUNK_SIZE,
                 chunk_overlap=settings.CHUNK_OVERLAP,
                 metadata={
                     'batch_id': batch_id,
-                    'uploaded_at': str(__import__('datetime').datetime.now())
+                    'uploaded_at': str(datetime.now())
                 }
             )
-
+            
+            # Push to queue
+            queue_service.push_upload_task(task.to_dict())
+            
             job_response = UploadJobResponse(
-                job_id=job.id,
+                job_id=task_id,
                 file_name=file.filename,
                 status="queued",
                 message="File queued for processing"
             )
             jobs.append(job_response)
-            print(f"   Job ID: {job.id}")
 
         print(f"\n{'='*70}")
-        print(f"✅ BATCH UPLOAD COMPLETED")
+        print(f"✅ BATCH QUEUED FOR PROCESSING")
         print(f"{'='*70}")
-        print(f"Total jobs queued: {len(jobs)}\n")
+        print(f"Total files queued: {len(jobs)}\n")
 
         return BatchUploadResponse(
             batch_id=batch_id,
             total_files=len(files),
             jobs=jobs,
-            message=f"Successfully queued {len(files)} files for processing"
+            message=f"Queued {len(files)} files for processing"
         )
 
     except Exception as e:
-        error_msg = f"Upload failed: {str(e)}"
+        error_msg = f"Upload queue failed: {str(e)}"
         print(f"❌ {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
+async def get_job_status(
+    job_id: str,
+    db: Session = Depends(get_db)
+):
     """
-    Get status of a queued/processing job
+    Get status of a document processing job (job_id is the document_id)
 
     Args:
-        job_id: ID of the job to check
+        job_id: Document ID (used as job ID for backward compatibility)
 
     Returns:
-        JobStatusResponse with current job status
+        JobStatusResponse with document status
 
-    Possible statuses:
-    - queued: Job waiting in queue
-    - started: Job is currently processing
-    - completed: Job finished successfully
-    - failed: Job failed with error
+    Statuses:
+    - indexing: Document is being processed
+    - completed: Document successfully processed
     """
     try:
-        queue = get_queue()
-        job = queue.fetch_job(job_id)
+        # job_id is actually the document_id (since we use synchronous processing)
+        document = db.query(Document).filter(Document.id == job_id).first()
 
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+        if not document:
+            raise HTTPException(status_code=404, detail=f"Document not found: {job_id}")
 
-        # Get job status and result
-        status = job.get_status()
-        result = job.result if job.result else {}
-        exc_info = job.exc_info if job.exc_info else None
+        # Count chunks for this document
+        chunk_count = db.query(ChildChunk).filter(ChildChunk.document_id == job_id).count()
 
         return JobStatusResponse(
             job_id=job_id,
-            status=status,
-            file_name=result.get('file_name'),
-            document_id=result.get('document_id'),
-            cloudinary_url=result.get('cloudinary_url'),
-            progress=result.get('progress'),
-            error=result.get('error') or exc_info,
-            timing=result.get('timing'),
-            message=result.get('message')
+            status=document.status,
+            file_name=document.file_name,
+            document_id=job_id,
+            cloudinary_url=document.file_path,
+            progress=100 if document.status == "completed" else 0,
+            error=None,
+            timing={},
+            message=f"Document status: {document.status}, chunks: {chunk_count}"
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = f"Failed to get job status: {str(e)}"
+        error_msg = f"Failed to get document status: {str(e)}"
         print(f"❌ {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
 
 
 @router.get("/jobs/{job_id}/status-simple")
-async def get_job_status_simple(job_id: str):
+async def get_job_status_simple(
+    job_id: str,
+    db: Session = Depends(get_db)
+):
     """
-    Get simple job status (just the status string)
+    Get simple document status (just the status string)
 
     Returns:
-        {'status': 'queued' | 'started' | 'completed' | 'failed'}
+        {'status': 'indexing' | 'completed', 'job_id': document_id}
     """
     try:
-        queue = get_queue()
-        job = queue.fetch_job(job_id)
+        # job_id is actually the document_id
+        document = db.query(Document).filter(Document.id == job_id).first()
 
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+        if not document:
+            raise HTTPException(status_code=404, detail=f"Document not found: {job_id}")
 
         return {
             'job_id': job_id,
-            'status': job.get_status(),
-            'is_finished': job.is_finished,
-            'is_failed': job.is_failed
+            'status': document.status,
+            'is_finished': document.status == "completed",
+            'is_failed': document.status == "failed"
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = f"Failed to get job status: {str(e)}"
+        error_msg = f"Failed to get document status: {str(e)}"
         print(f"❌ {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
 
+
+@router.put("/documents/{document_id}/edit", response_model=EditDocumentResponse)
+async def edit_document(
+    document_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Queue a document for editing and re-indexing
+    
+    Upload a new file to replace document content.
+    Worker will: delete old chunks, re-chunk, re-embed, and re-index.
+
+    Args:
+        document_id: Document ID to edit (path parameter)
+        file: New file to upload (file picker)
+        db: Database session
+        
+    Returns:
+        EditDocumentResponse with task ID
+    """
+    try:
+        print(f"\n{'='*70}")
+        print(f"✏️ QUEUING DOCUMENT EDIT: {document_id}")
+        print(f"{'='*70}")
+        
+        # Verify document exists
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+        
+        print(f"✅ Document found: {document.file_name}")
+        
+        # Save uploaded file to temp directory
+        os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
+        temp_file_name = f"edit_{uuid.uuid4()}_{file.filename}"
+        temp_file_path = os.path.join(settings.TEMP_UPLOAD_DIR, temp_file_name)
+        
+        contents = await file.read()
+        with open(temp_file_path, "wb") as f:
+            f.write(contents)
+        print(f"✅ Saved temp file: {temp_file_name}")
+        
+        # Create edit task
+        task_id = str(uuid.uuid4())
+        task = EditTask(
+            task_id=task_id,
+            document_id=document_id,
+            file_path=temp_file_path,
+            file_name=file.filename or document.file_name,
+            chunk_size=settings.CHUNK_SIZE,
+            chunk_overlap=settings.CHUNK_OVERLAP,
+            metadata={'edited_at': str(datetime.now())}
+        )
+        
+        # Push to queue
+        queue_service = get_queue_service()
+        queue_service.push_edit_task(task.to_dict())
+        
+        print(f"\n{'='*70}")
+        print(f"✅ DOCUMENT QUEUED FOR EDITING")
+        print(f"{'='*70}\n")
+        
+        return EditDocumentResponse(
+            document_id=document_id,
+            file_name=document.file_name,
+            status="queued",
+            message="Document queued for re-indexing"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to queue edit: {str(e)}"
+        print(f"❌ {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.get("/jobs/{job_id}", response_model=JobStatusResponse)

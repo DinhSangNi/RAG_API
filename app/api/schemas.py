@@ -5,7 +5,6 @@ Pydantic Schemas for API Request/Response Models
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from enum import Enum
 
 
 class DocumentResponse(BaseModel):
@@ -23,54 +22,6 @@ class DocumentResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class SearchRequest(BaseModel):
-    """
-    Request schema for search API
-    """
-    query: str = Field(..., description="Search query")
-    top_k: int = Field(default=10, description="Number of results to return")
-    document_ids: Optional[List[str]] = Field(default=None, description="Filter by document IDs (UUIDs)")
-    search_type: str = Field(default="hybrid", description="Search type: bm25, semantic, hybrid")
-    bm25_weight: float = Field(default=0.5, description="BM25 weight for hybrid search")
-    semantic_weight: float = Field(default=0.5, description="Semantic weight for hybrid search")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "query": "When was Hồ Chí Minh born?",
-                "top_k": 10,
-                "search_type": "hybrid",
-                "bm25_weight": 0.5,
-                "semantic_weight": 0.5
-            }
-        }
-
-
-class SearchResult(BaseModel):
-    """
-    Response schema for search result
-    """
-    id: int
-    content: str
-    score: float
-    h1: Optional[str] = None
-    h2: Optional[str] = None
-    h3: Optional[str] = None
-    document_id: str  # UUID
-    chunk_index: int
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class SearchResponse(BaseModel):
-    """
-    Response schema for search
-    """
-    query: str
-    results: List[SearchResult]
-    total: int
-    search_type: str
 
 
 class ChatRequest(BaseModel):
@@ -154,5 +105,45 @@ class JobStatusResponse(BaseModel):
                 "cloudinary_url": "https://res.cloudinary.com/...",
                 "progress": {"step": "completed", "current": 100, "total": 100},
                 "message": "Document processed successfully"
+            }
+        }
+
+
+class EditDocumentRequest(BaseModel):
+    """
+    Request schema for editing document content
+    """
+    document_id: str = Field(..., description="Document ID to edit (UUID)")
+    new_content: str = Field(..., description="New document content")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "document_id": "123e4567-e89b-12d3-a456-426614174000",
+                "new_content": "Updated document content here..."
+            }
+        }
+
+
+class EditDocumentResponse(BaseModel):
+    """
+    Response schema for document edit
+    """
+    document_id: str
+    file_name: str
+    status: str
+    message: str
+    chunks_created: int
+    old_chunks_deleted: int
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "document_id": "123e4567-e89b-12d3-a456-426614174000",
+                "file_name": "document.md",
+                "status": "completed",
+                "message": "Document updated and re-embedded successfully",
+                "chunks_created": 15,
+                "old_chunks_deleted": 12
             }
         }

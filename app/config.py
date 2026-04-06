@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Database Configuration
-    DATABASE_URL: str = "postgresql://postgre:2402@23.101.8.7:5432/ragdb"
+    DATABASE_URL: str = ""
 
     # Google AI Configuration
     GEMINI_API_KEY: str = ""
@@ -48,13 +48,6 @@ class Settings(BaseSettings):
     PROCESSED_DIR: str = "./data/processed"
     RAW_DIR: str = "./data/raw"
 
-    # Redis Queue Configuration
-    REDIS_URL: str = "redis://127.0.0.1:6379/0"
-    REDIS_HOST: str = "127.0.0.1"
-    REDIS_PORT: int = 6379
-    REDIS_DB: int = 0
-    QUEUE_NAME: str = "rag_indexing"
-
     # Cloudinary Configuration (Load from .env)
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
@@ -63,6 +56,11 @@ class Settings(BaseSettings):
     
     # Temporary file storage for batch uploads
     TEMP_UPLOAD_DIR: str = "./data/temp_uploads"
+    
+    # Redis Configuration (for background task queue)
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -73,10 +71,6 @@ class Settings(BaseSettings):
             self.PROCESSED_DIR = "/app/data/processed"
             self.RAW_DIR = "/app/data/raw"
             self.TEMP_UPLOAD_DIR = "/app/data/uploads"  # Same as UPLOAD_DIR
-            # In Docker, Redis is usually accessible via 'redis' service name
-            if not self.REDIS_HOST or self.REDIS_HOST in ("localhost", "127.0.0.1"):
-                self.REDIS_URL = "redis://redis:6379/0"
-                self.REDIS_HOST = "redis"
 
     class Config:
         env_file = ".env"
