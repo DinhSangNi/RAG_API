@@ -36,8 +36,9 @@ RUN mkdir -p /app/data/uploads
 # Set Python to run in unbuffered mode
 ENV PYTHONUNBUFFERED=1
 
-# Set VnCoreNLP socket timeout (60 seconds)
-ENV VNCORENLP_SOCKET_TIMEOUT=60000
+# Set VnCoreNLP options (optimized for wseg only)
+ENV VNCORENLP_SOCKET_TIMEOUT=120000
+ENV _JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Djava.net.preferIPv4Stack=true"
 
 # Run worker
 CMD ["python", "worker.py"]

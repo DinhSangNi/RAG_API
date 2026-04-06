@@ -70,7 +70,7 @@ class VietnameseSegmentationService:
     # ------------------------------------------------------------------
 
     def _load_model(self):
-        """Load VnCoreNLP JVM model (once per process)."""
+        """Load VnCoreNLP JVM model (once per process) - optimized for wseg only."""
         try:
             from vncorenlp import VnCoreNLP
 
@@ -79,10 +79,12 @@ class VietnameseSegmentationService:
                 return
 
             print('🔧 Initializing VnCoreNLP for Vietnamese word segmentation...')
+            # Optimize for wseg only: reduced heap size, socket timeout, aggressive GC
             self._model = VnCoreNLP(
                 VNCORENLP_JAR,
                 annotators='wseg',
-                max_heap_size='-Xmx512m',
+                max_heap_size='-Xmx256m',
+                quiet=False,
             )
             print('✅ VnCoreNLP loaded successfully')
 
