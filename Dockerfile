@@ -40,6 +40,9 @@ RUN mkdir -p /app/data/uploads && rm -rf /app/data/temp_uploads
 # Set Python to run in unbuffered mode for better logging
 ENV PYTHONUNBUFFERED=1
 
+# Set VnCoreNLP socket timeout (60 seconds)
+ENV VNCORENLP_SOCKET_TIMEOUT=60000
+
 # Expose port
 EXPOSE 8000
 

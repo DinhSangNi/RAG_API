@@ -36,5 +36,8 @@ RUN mkdir -p /app/data/uploads
 # Set Python to run in unbuffered mode
 ENV PYTHONUNBUFFERED=1
 
+# Set VnCoreNLP socket timeout (60 seconds)
+ENV VNCORENLP_SOCKET_TIMEOUT=60000
+
 # Run worker
 CMD ["python", "worker.py"]
