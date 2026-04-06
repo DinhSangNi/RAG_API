@@ -49,7 +49,7 @@ class SearchService:
         """Strip characters that ParadeDB BM25 parser treats as operators.
 
         Affected chars: : ? ! ( ) { } [ ] ^ " ~ * + - / \\
-        Underscores are preserved (VnCoreNLP compound words e.g. trị_vì, Minh_Mạng).
+        Underscores are preserved (Underthesea compound words e.g. trị_vì, Minh_Mạng).
         """
         sanitized = re.sub(r'[^\w\s]', ' ', query, flags=re.UNICODE)
         return re.sub(r'\s+', ' ', sanitized).strip()
@@ -116,7 +116,7 @@ class SearchService:
         """
         bm25_started_at = time.perf_counter()
         
-        # Always segment query to match VnCoreNLP-segmented bm25_text tokens
+        # Always segment query to match Underthesea-segmented bm25_text tokens
         original_query = query
         query = self.segmentation_service.segment_query(query)
         query = self._sanitize_bm25_query(query)
@@ -463,7 +463,7 @@ class SearchService:
         """
         bm25_started_at = time.perf_counter()
         
-        # Always segment query to match VnCoreNLP-segmented bm25_text tokens
+        # Always segment query to match Underthesea-segmented bm25_text tokens
         original_query = query
         query = self.segmentation_service.segment_query(query)
         query = self._sanitize_bm25_query(query)
