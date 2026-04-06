@@ -72,15 +72,14 @@ class VietnameseSegmentationService:
     def _load_model(self):
         """Load VnCoreNLP JVM model (once per process)."""
         try:
-            import vncorenlp  # noqa: F401 — check import before heavy work
+            from vncorenlp import VnCoreNLP
 
             if not _ensure_vncorenlp_files():
                 self._model = None
                 return
 
             print('🔧 Initializing VnCoreNLP for Vietnamese word segmentation...')
-            import vncorenlp as _vncorenlp
-            self._model = _vncorenlp.VnCoreNLP(
+            self._model = VnCoreNLP(
                 VNCORENLP_JAR,
                 annotators='wseg',
                 max_heap_size='-Xmx512m',
