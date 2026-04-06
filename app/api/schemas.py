@@ -133,8 +133,8 @@ class EditDocumentResponse(BaseModel):
     file_name: str
     status: str
     message: str
-    chunks_created: int
-    old_chunks_deleted: int
+    chunks_created: int = 0
+    old_chunks_deleted: int = 0
     
     class Config:
         json_schema_extra = {

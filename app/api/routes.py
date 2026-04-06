@@ -391,7 +391,9 @@ async def edit_document(
             document_id=document_id,
             file_name=document.file_name,
             status="queued",
-            message="Document queued for re-indexing"
+            message="Document queued for re-indexing",
+            chunks_created=0,
+            old_chunks_deleted=0
         )
         
     except HTTPException:
