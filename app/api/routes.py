@@ -399,6 +399,3 @@ async def edit_document(
         error_msg = f"Failed to queue edit: {str(e)}"
         print(f"❌ {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
-
-
-@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
