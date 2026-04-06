@@ -23,7 +23,7 @@ redis
 dependency-injector
 
 # Vietnamese NLP
-vncorenlp
+underthesea
 
 # Utilities
 python-dotenv

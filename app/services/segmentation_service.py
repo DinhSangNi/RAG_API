@@ -1,58 +1,28 @@
 ﻿"""
-Vietnamese Word Segmentation Service using VnCoreNLP (wseg annotator).
+Vietnamese Word Segmentation Service using Underthesea.
 
-VnCoreNLP outputs multi-word tokens joined by underscore
+Outputs multi-word tokens joined by underscore
 (e.g., "Hà Nội" → "Hà_Nội", "tổng khởi nghĩa" → "tổng_khởi_nghĩa").
 These are stored in the `bm25_text` column and used for BM25 indexing via
 ParadeDB.  The ParadeDB `unicode_words` tokenizer treats underscore as a
 word connector, so "Hà_Nội" stays as a single token "hà_nội".
+
+Underthesea is pure Python, no Java needed, instant startup.
 """
-import os
-import urllib.request
 from typing import Optional
 
 
-VNCORENLP_DIR = '/app/vncorenlp'
-VNCORENLP_JAR = f'{VNCORENLP_DIR}/VnCoreNLP-1.2.jar'
 
-_DOWNLOAD_FILES = {
-    VNCORENLP_JAR:
-        'https://github.com/vncorenlp/VnCoreNLP/raw/master/VnCoreNLP-1.2.jar',
-    f'{VNCORENLP_DIR}/models/wordsegmenter/vi-vocab':
-        'https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/vi-vocab',
-    f'{VNCORENLP_DIR}/models/wordsegmenter/wordsegmenter.rdr':
-        'https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/wordsegmenter.rdr',
-}
-
-
-def _ensure_vncorenlp_files() -> bool:
-    """Download VnCoreNLP JAR + model files if not already present.
-
-    Returns True when all files exist (whether pre-existing or just downloaded).
-    """
-    os.makedirs(f'{VNCORENLP_DIR}/models/wordsegmenter', exist_ok=True)
-    try:
-        for dest, url in _DOWNLOAD_FILES.items():
-            if not os.path.exists(dest):
-                print(f'📥 Downloading {os.path.basename(dest)} ...')
-                urllib.request.urlretrieve(url, dest)
-                print(f'✅ Downloaded {os.path.basename(dest)}')
-        return True
-    except Exception as e:
-        print(f'⚠️  Failed to download VnCoreNLP files: {e}')
-        return False
 
 
 class VietnameseSegmentationService:
     """
-    Singleton service for Vietnamese word segmentation using VnCoreNLP wseg.
-
-    Falls back to returning the original text when VnCoreNLP is unavailable
-    (Java not found, download failed, etc.).
+    Singleton service for Vietnamese word segmentation using Underthesea.
+    
+    Pure Python implementation - no Java needed, instant initialization.
     """
 
     _instance: Optional['VietnameseSegmentationService'] = None
-    _model = None
     _initialized = False
 
     def __new__(cls):
@@ -70,30 +40,14 @@ class VietnameseSegmentationService:
     # ------------------------------------------------------------------
 
     def _load_model(self):
-        """Load VnCoreNLP JVM model (once per process) - optimized for wseg only."""
+        """Load Underthesea word tokenizer (instant, no Java)."""
         try:
-            from vncorenlp import VnCoreNLP
-
-            if not _ensure_vncorenlp_files():
-                self._model = None
-                return
-
-            print('🔧 Initializing VnCoreNLP for Vietnamese word segmentation...')
-            # Optimize for wseg only: reduced heap size, socket timeout, aggressive GC
-            self._model = VnCoreNLP(
-                VNCORENLP_JAR,
-                annotators='wseg',
-                max_heap_size='-Xmx256m',
-                quiet=False,
-            )
-            print('✅ VnCoreNLP loaded successfully')
-
+            from underthesea import word_tokenize
+            print('✅ Underthesea loaded successfully')
         except ImportError:
-            print('⚠️ vncorenlp not installed. Run: pip install vncorenlp')
-            self._model = None
+            print('⚠️ underthesea not installed. Run: pip install underthesea')
         except Exception as e:
-            print(f'⚠️ Failed to load VnCoreNLP: {e}')
-            self._model = None
+            print(f'⚠️ Failed to initialize Underthesea: {e}')
 
     # ------------------------------------------------------------------
     # Public API
@@ -129,7 +83,7 @@ class VietnameseSegmentationService:
     def segment_query(self, query: str) -> str:
         """Segment a search query to match bm25_text tokens in the index."""
         import re
-        # Strip punctuation before VnCoreNLP so "ai?" and "ai ?" are treated identically
+        # Strip punctuation so "ai?" and "ai ?" are treated identically
         clean = re.sub(r'[^\w\s]', ' ', query.strip(), flags=re.UNICODE)
         clean = re.sub(r' +', ' ', clean).strip()
         return self.segment(clean)

@@ -40,9 +40,7 @@ RUN mkdir -p /app/data/uploads && rm -rf /app/data/temp_uploads
 # Set Python to run in unbuffered mode for better logging
 ENV PYTHONUNBUFFERED=1
 
-# Set VnCoreNLP options (optimized for wseg only)
-ENV VNCORENLP_SOCKET_TIMEOUT=120000
-ENV _JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Djava.net.preferIPv4Stack=true"
+# No Java needed - using Underthesea for Vietnamese NLP
 
 # Expose port
 EXPOSE 8000
