@@ -49,14 +49,11 @@ class VietnameseSegmentationService:
 
     Falls back to returning the original text when VnCoreNLP is unavailable
     (Java not found, download failed, etc.).
-    
-    LAZY LOADS: VnCoreNLP is only initialized on first use to avoid blocking
-    startup if Java process is slow or unavailable.
     """
 
     _instance: Optional['VietnameseSegmentationService'] = None
     _model = None
-    _load_attempted = False
+    _initialized = False
 
     def __new__(cls):
         if cls._instance is None:
@@ -64,19 +61,16 @@ class VietnameseSegmentationService:
         return cls._instance
 
     def __init__(self):
-        """Singleton initialization (lazy load on first use)."""
-        pass
+        if not self._initialized:
+            self._load_model()
+            self._initialized = True
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     def _load_model(self):
-        """Load VnCoreNLP JVM model (lazy - only on first segment call)."""
-        if self._load_attempted:
-            return  # Already tried to load, don't retry
-        
-        self._load_attempted = True
+        """Load VnCoreNLP JVM model (once per process)."""
         try:
             from vncorenlp import VnCoreNLP
 
@@ -88,7 +82,7 @@ class VietnameseSegmentationService:
             self._model = VnCoreNLP(
                 VNCORENLP_JAR,
                 annotators='wseg',
-                max_heap_size='-Xmx1024m',
+                max_heap_size='-Xmx512m',
             )
             print('✅ VnCoreNLP loaded successfully')
 
@@ -112,15 +106,9 @@ class VietnameseSegmentationService:
             Output: "Hà_Nội chiếm dinh Khâm_sai Bắc_bộ"
 
         Falls back to the original text when the model is unavailable.
-        Lazy loads VnCoreNLP on first call.
         """
         if not text or not text.strip():
             return ''
-        
-        # Lazy load on first use
-        if not self._load_attempted:
-            self._load_model()
-        
         if self._model is None:
             return text.strip()
         try:

@@ -6,7 +6,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
-    python3-dev \
     postgresql-client \
     default-jre-headless \
     wget \
@@ -36,10 +35,6 @@ RUN mkdir -p /app/data/uploads
 
 # Set Python to run in unbuffered mode
 ENV PYTHONUNBUFFERED=1
-
-# Set Java options for VnCoreNLP (increase heap size and startup timeout)
-ENV _JAVA_OPTIONS="-Xmx1024m -Xms512m"
-ENV VNCORENLP_SOCKET_TIMEOUT=120000
 
 # Run worker
 CMD ["python", "worker.py"]
