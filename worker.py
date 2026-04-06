@@ -173,25 +173,37 @@ class DocumentWorker:
         logger.info("✅ DocumentWorker fully initialized and ready")
     
     def process_upload_task(self, task: UploadTask) -> TaskResult:
-        """Process document upload task"""
+        """
+        Process document upload task
+        
+        Steps:
+        1. Read raw file from shared storage (TEMP_UPLOAD_DIR)
+        2. Upload content to Cloudinary (streaming - no intermediate files)
+        3. Process content: chunk, embed, segment (in-memory)
+        4. Save to database
+        5. Clean up raw file from shared storage
+        """
         logger.info(f"Starting UPLOAD task - ID: {task.task_id}")
         task_start = time.time()
         
         try:
-            # Step 1: Read file
-            logger.info(f"[{task.task_id}] Step 1: Reading file: {task.file_name}")
+            # Step 1: Read raw file from shared storage
+            logger.info(f"[{task.task_id}] Step 1: Reading file from shared storage")
+            logger.info(f"[{task.task_id}] Shared storage: {settings.TEMP_UPLOAD_DIR}")
+            logger.info(f"[{task.task_id}] File name: {task.file_name}")
+            
             if not os.path.exists(task.file_path):
-                raise FileNotFoundError(f"File not found: {task.file_path}")
+                raise FileNotFoundError(f"File not found at {task.file_path}")
             
             with open(task.file_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
             
             file_size = os.path.getsize(task.file_path)
             content_hash = hashlib.sha256(content.encode()).hexdigest()
-            logger.info(f"[{task.task_id}] ✅ File read: {file_size} bytes")
+            logger.info(f"[{task.task_id}] ✅ File read from shared storage: {file_size} bytes")
             
-            # Step 2: Upload to Cloudinary
-            logger.info(f"[{task.task_id}] Step 2: Uploading to Cloudinary...")
+            # Step 2: Upload to Cloudinary (streaming content)
+            logger.info(f"[{task.task_id}] Step 2: Uploading content to Cloudinary...")
             cloudinary_result = self.cloudinary_service.upload_file(
                 file_path=task.file_path,
                 folder=settings.CLOUDINARY_UPLOAD_FOLDER
@@ -216,14 +228,17 @@ class DocumentWorker:
             self.db.commit()
             logger.info(f"[{task.task_id}] ✅ Document created: {document_id}")
             
-            # Step 4: Chunk content
-            logger.info(f"[{task.task_id}] Step 4: Chunking document...")
+            # Step 4: Process content (in-memory streaming)
+            logger.info(f"[{task.task_id}] Step 4: Processing content (chunking, embedding, segmentation)...")
+            
+            # 4a: Chunk content
+            logger.info(f"[{task.task_id}]   - Chunking...")
             chunks_result = self.chunking_service.chunk_markdown(content, task.file_name)
             chunks = chunks_result['child_chunks']
-            logger.info(f"[{task.task_id}] ✅ Created {len(chunks)} chunks")
+            logger.info(f"[{task.task_id}]   - Created {len(chunks)} chunks")
             
-            # Step 5: Embed and save chunks
-            logger.info(f"[{task.task_id}] Step 5: Embedding chunks...")
+            # 4b: Embed and save chunks (streamed, no intermediate files)
+            logger.info(f"[{task.task_id}]   - Embedding and indexing chunks...")
             chunks_created = 0
             for i, chunk in enumerate(chunks):
                 chunk_text = chunk.get('content', '')
@@ -235,7 +250,7 @@ class DocumentWorker:
                 # Segment
                 segments = self.segmentation_service.segment(chunk_text)
                 
-                # Save
+                # Save to database (no file I/O)
                 child_chunk = ChildChunk(
                     document_id=document_id,
                     content=chunk_text,
@@ -251,24 +266,28 @@ class DocumentWorker:
                 chunks_created += 1
                 
                 if (i + 1) % 10 == 0:
-                    logger.debug(f"[{task.task_id}] Progress: {i + 1}/{len(chunks)} chunks embedded")
+                    logger.debug(f"[{task.task_id}]   - Progress: {i + 1}/{len(chunks)} chunks embedded")
             
             self.db.commit()
-            logger.info(f"[{task.task_id}] ✅ Saved {chunks_created} chunks")
+            logger.info(f"[{task.task_id}] ✅ Processed: {len(chunks)} chunks embedded and indexed")
             
-            # Step 6: Update document status
-            logger.info(f"[{task.task_id}] Step 6: Updating document status...")
+            # Step 5: Update document status
+            logger.info(f"[{task.task_id}] Step 5: Finalizing...")
             document.status = "completed"
             self.db.commit()
             logger.info(f"[{task.task_id}] ✅ Document status updated to COMPLETED")
             
-            # Clean up temp file
-            if os.path.exists(task.file_path):
-                os.remove(task.file_path)
-                logger.info(f"[{task.task_id}] ✅ Temp file cleaned up")
+            # Step 6: Clean up raw file from shared storage
+            try:
+                if os.path.exists(task.file_path):
+                    os.remove(task.file_path)
+                    logger.info(f"[{task.task_id}] ✅ Cleaned up raw file from shared storage")
+            except Exception as cleanup_error:
+                logger.warning(f"[{task.task_id}] ⚠️ Failed to clean up file: {cleanup_error}")
             
             elapsed = time.time() - task_start
             logger.info(f"[{task.task_id}] ✅ UPLOAD TASK COMPLETED in {elapsed:.2f}s")
+            logger.info(f"[{task.task_id}] Summary: {chunks_created} chunks indexed, {file_size} bytes processed")
             
             return TaskResult(
                 task_id=task.task_id,
@@ -283,6 +302,15 @@ class DocumentWorker:
             logger.error(f"[{task.task_id}] ❌ {error_msg}", exc_info=True)
             elapsed = time.time() - task_start
             logger.error(f"[{task.task_id}] Task failed after {elapsed:.2f}s")
+            
+            # Try to clean up even on error
+            try:
+                if os.path.exists(task.file_path):
+                    os.remove(task.file_path)
+                    logger.info(f"[{task.task_id}] Cleaned up file after error")
+            except:
+                pass
+            
             return TaskResult(
                 task_id=task.task_id,
                 status="failed",
@@ -290,7 +318,17 @@ class DocumentWorker:
             )
     
     def process_edit_task(self, task: EditTask) -> TaskResult:
-        """Process document edit task"""
+        """
+        Process document edit task (re-indexing)
+        
+        Steps:
+        1. Verify document exists
+        2. Read new raw file from shared storage
+        3. Delete old chunks
+        4. Process new content (chunk, embed, segment - in-memory)
+        5. Save to database
+        6. Clean up raw file from shared storage
+        """
         logger.info(f"Starting EDIT task - ID: {task.task_id}, Document: {task.document_id}")
         task_start = time.time()
         
@@ -302,8 +340,13 @@ class DocumentWorker:
                 raise ValueError(f"Document not found: {task.document_id}")
             logger.info(f"[{task.task_id}] ✅ Document found: {document.file_name}")
             
-            # Step 2: Read new file
-            logger.info(f"[{task.task_id}] Step 2: Reading new file...")
+            # Step 2: Read new file from shared storage
+            logger.info(f"[{task.task_id}] Step 2: Reading new file from shared storage...")
+            logger.info(f"[{task.task_id}] Shared storage: {settings.TEMP_UPLOAD_DIR}")
+            
+            if not os.path.exists(task.file_path):
+                raise FileNotFoundError(f"File not found at {task.file_path}")
+            
             with open(task.file_path, "r", encoding="utf-8", errors="ignore") as f:
                 new_content = f.read()
             logger.info(f"[{task.task_id}] ✅ File read ({len(new_content)} chars)")
@@ -329,14 +372,17 @@ class DocumentWorker:
             self.db.commit()
             logger.info(f"[{task.task_id}] ✅ Metadata updated")
             
-            # Step 5: Chunk content
-            logger.info(f"[{task.task_id}] Step 5: Re-chunking document...")
+            # Step 5: Process new content (in-memory streaming)
+            logger.info(f"[{task.task_id}] Step 5: Processing new content (chunking, embedding, segmentation)...")
+            
+            # 5a: Chunk content
+            logger.info(f"[{task.task_id}]   - Re-chunking...")
             chunks_result = self.chunking_service.chunk_markdown(new_content, task.file_name)
             chunks = chunks_result['child_chunks']
-            logger.info(f"[{task.task_id}] ✅ Created {len(chunks)} new chunks")
+            logger.info(f"[{task.task_id}]   - Created {len(chunks)} new chunks")
             
-            # Step 6: Embed and save
-            logger.info(f"[{task.task_id}] Step 6: Embedding and saving chunks...")
+            # 5b: Embed and save (streamed, no intermediate files)
+            logger.info(f"[{task.task_id}]   - Embedding and indexing chunks...")
             chunks_created = 0
             for i, chunk in enumerate(chunks):
                 chunk_text = chunk.get('content', '')
@@ -360,21 +406,24 @@ class DocumentWorker:
                 chunks_created += 1
                 
                 if (i + 1) % 10 == 0:
-                    logger.debug(f"[{task.task_id}] Progress: {i + 1}/{len(chunks)} chunks embedded")
+                    logger.debug(f"[{task.task_id}]   - Progress: {i + 1}/{len(chunks)} chunks embedded")
             
             self.db.commit()
-            logger.info(f"[{task.task_id}] ✅ Saved {chunks_created} chunks")
+            logger.info(f"[{task.task_id}] ✅ Processed: {len(chunks)} chunks embedded and indexed")
             
-            # Step 7: Update document status
-            logger.info(f"[{task.task_id}] Step 7: Updating document status...")
+            # Step 6: Update document status
+            logger.info(f"[{task.task_id}] Step 6: Finalizing...")
             document.status = "completed"
             self.db.commit()
             logger.info(f"[{task.task_id}] ✅ Document status updated to COMPLETED")
             
-            # Clean up
-            if os.path.exists(task.file_path):
-                os.remove(task.file_path)
-                logger.info(f"[{task.task_id}] ✅ Temp file cleaned up")
+            # Step 7: Clean up raw file from shared storage
+            try:
+                if os.path.exists(task.file_path):
+                    os.remove(task.file_path)
+                    logger.info(f"[{task.task_id}] ✅ Cleaned up raw file from shared storage")
+            except Exception as cleanup_error:
+                logger.warning(f"[{task.task_id}] ⚠️ Failed to clean up file: {cleanup_error}")
             
             elapsed = time.time() - task_start
             logger.info(f"[{task.task_id}] ✅ EDIT TASK COMPLETED in {elapsed:.2f}s (deleted {old_chunk_count}, created {chunks_created})")
@@ -393,6 +442,15 @@ class DocumentWorker:
             logger.error(f"[{task.task_id}] ❌ {error_msg}", exc_info=True)
             elapsed = time.time() - task_start
             logger.error(f"[{task.task_id}] Task failed after {elapsed:.2f}s")
+            
+            # Try to clean up even on error
+            try:
+                if os.path.exists(task.file_path):
+                    os.remove(task.file_path)
+                    logger.info(f"[{task.task_id}] Cleaned up file after error")
+            except:
+                pass
+            
             return TaskResult(
                 task_id=task.task_id,
                 status="failed",

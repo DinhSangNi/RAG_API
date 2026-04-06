@@ -94,7 +94,7 @@ class ChildChunk(Base):
     
     # Content
     content = Column(Text, nullable=False)
-    bm25_text = Column(Text, nullable=True)     # VnCoreNLP word-segmented text for BM25 search
+    bm25_text = Column(Text, nullable=True)     # Underthesea word-segmented text for BM25 search
 
     # Vector embedding
     vector = Column(Vector(settings.DIMENSION_OF_MODEL))
@@ -133,7 +133,7 @@ class SummaryDocument(Base):
     
     # Summary content (raw text)
     summary_content = Column(Text, nullable=False)
-    bm25_text = Column(Text, nullable=True)     # VnCoreNLP word-segmented text for BM25 search
+    bm25_text = Column(Text, nullable=True)     # Underthesea word-segmented text for BM25 search
 
     # Content hash for duplicate detection
     content_hash = Column(String(64), nullable=True, index=True)  # SHA256 hash

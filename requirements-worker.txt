@@ -23,7 +23,7 @@ dependency-injector
 python-dotenv
 
 # Vietnamese NLP
-vncorenlp
+underthesea
 
 # Cloud Storage
 cloudinary

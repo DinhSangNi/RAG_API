@@ -42,20 +42,26 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 150
 
+    # Shared Storage Configuration (for API and Worker communication)
+    # Root storage directory - used for temporary file exchange between API and Worker
+    WEBAPP_STORAGE_HOME: str = "./site"
+    
     # File Storage Paths
     DATA_DIR: str = "./data"
     UPLOAD_DIR: str = "./data/uploads"
     PROCESSED_DIR: str = "./data/processed"
     RAW_DIR: str = "./data/raw"
 
+    # Temporary file storage for batch uploads (shared between API and Worker)
+    # Both API (upload) and Worker (processing) use this folder
+    # Format: ${WEBAPP_STORAGE_HOME}/site/temp_data
+    TEMP_UPLOAD_DIR: str = "./site/temp_data"
+
     # Cloudinary Configuration (Load from .env)
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
     CLOUDINARY_UPLOAD_FOLDER: str = "rag_documents"
-    
-    # Temporary file storage for batch uploads
-    TEMP_UPLOAD_DIR: str = "./data/temp_uploads"
     
     # Redis Configuration (for background task queue)
     REDIS_HOST: str = "localhost"
@@ -70,7 +76,11 @@ class Settings(BaseSettings):
             self.UPLOAD_DIR = "/app/data/uploads"
             self.PROCESSED_DIR = "/app/data/processed"
             self.RAW_DIR = "/app/data/raw"
-            self.TEMP_UPLOAD_DIR = "/app/data/uploads"  # Same as UPLOAD_DIR
+            # Use Azure App Service shared storage path if available
+            if self.WEBAPP_STORAGE_HOME == "./site":
+                self.TEMP_UPLOAD_DIR = "/home/site/temp_data"
+            else:
+                self.TEMP_UPLOAD_DIR = f"{self.WEBAPP_STORAGE_HOME}/site/temp_data"
 
     class Config:
         env_file = ".env"

@@ -56,9 +56,9 @@ app.openapi_schema = None
 @app.on_event("startup")
 async def _startup():
     """Initialize application on startup"""
-    print("\n" + "="*70)
-    print("🚀 RAG SERVICE API STARTING UP")
-    print("="*70)
+    logger.info("="*70)
+    logger.info("🚀 RAG SERVICE API STARTING UP")
+    logger.info("="*70)
     
     # Create required directories
     directories = [
@@ -68,16 +68,22 @@ async def _startup():
         settings.RAW_DIR,
     ]
     
+    logger.info("\n📁 Creating storage directories:")
     for directory in directories:
         os.makedirs(directory, exist_ok=True)
-        print(f"✅ {directory}")
+        logger.info(f"  ✅ {directory}")
+    
+    # Log shared storage configuration
+    logger.info(f"\n🔗 Shared Storage (API & Worker):")
+    logger.info(f"  📦 TEMP_UPLOAD_DIR: {settings.TEMP_UPLOAD_DIR}")
+    logger.info(f"  📦 WEBAPP_STORAGE_HOME: {settings.WEBAPP_STORAGE_HOME}")
     
     # Warm up stopwords
-    print("\n🔥 Warming up services...")
+    logger.info("\n🔥 Warming up services...")
     _warm_up_stopwords()
     
-    print("\n✅ Application ready!")
-    print("="*70 + "\n")
+    logger.info("\n✅ Application ready!")
+    logger.info("="*70 + "\n")
 
 
 def _warm_up_stopwords():
