@@ -2,26 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies (including Java for VnCoreNLP)
+# Install system dependencies
 # Use --no-install-recommends to reduce image size
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     python3-dev \
     postgresql-client \
-    default-jre-headless \
-    wget \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# Pre-download VnCoreNLP JAR and word-segmenter models
-# Cache this layer separately for faster rebuilds
-RUN mkdir -p /app/vncorenlp/models/wordsegmenter \
-    && wget -q -O /app/vncorenlp/VnCoreNLP-1.2.jar \
-    https://github.com/vncorenlp/VnCoreNLP/raw/master/VnCoreNLP-1.2.jar \
-    && wget -q -O /app/vncorenlp/models/wordsegmenter/vi-vocab \
-    https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/vi-vocab \
-    && wget -q -O /app/vncorenlp/models/wordsegmenter/wordsegmenter.rdr \
-    https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/wordsegmenter.rdr
 
 # Copy only requirements first (for better cache layering)
 COPY requirements.txt .
@@ -39,8 +27,6 @@ RUN mkdir -p /app/data/uploads && rm -rf /app/data/temp_uploads
 
 # Set Python to run in unbuffered mode for better logging
 ENV PYTHONUNBUFFERED=1
-
-# No Java needed - using Underthesea for Vietnamese NLP
 
 # Expose port
 EXPOSE 8000

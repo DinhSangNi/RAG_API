@@ -7,18 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     postgresql-client \
-    default-jre-headless \
-    wget \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# Pre-download VnCoreNLP JAR and word-segmenter models
-RUN mkdir -p /app/vncorenlp/models/wordsegmenter \
-    && wget -q -O /app/vncorenlp/VnCoreNLP-1.2.jar \
-    https://github.com/vncorenlp/VnCoreNLP/raw/master/VnCoreNLP-1.2.jar \
-    && wget -q -O /app/vncorenlp/models/wordsegmenter/vi-vocab \
-    https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/vi-vocab \
-    && wget -q -O /app/vncorenlp/models/wordsegmenter/wordsegmenter.rdr \
-    https://raw.githubusercontent.com/vncorenlp/VnCoreNLP/master/models/wordsegmenter/wordsegmenter.rdr
 
 # Copy requirements
 COPY requirements-worker.txt .
@@ -35,8 +24,6 @@ RUN mkdir -p /app/data/uploads
 
 # Set Python to run in unbuffered mode
 ENV PYTHONUNBUFFERED=1
-
-# No Java needed - using Underthesea for Vietnamese NLP
 
 # Run worker
 CMD ["python", "worker.py"]
