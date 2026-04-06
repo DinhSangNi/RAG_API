@@ -17,11 +17,12 @@ services:
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
       REDIS_DB: ${REDIS_DB}
+      WEBAPP_STORAGE_HOME: ${WEBAPP_STORAGE_HOME:-./site}
     ports:
       - "8000:8000"
     volumes:
-      - ./data/uploads:/app/data/uploads
-      - ./data/temp_uploads:/app/data/temp_uploads
+      # Shared storage for file exchange between API and Worker
+      - ./site/temp_data:/app/site/temp_data
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     networks:
@@ -45,9 +46,10 @@ services:
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
       REDIS_DB: ${REDIS_DB}
+      WEBAPP_STORAGE_HOME: ${WEBAPP_STORAGE_HOME:-./site}
     volumes:
-      - ./data/uploads:/app/data/uploads
-      - ./data/temp_uploads:/app/data/temp_uploads
+      # Shared storage for file exchange between API and Worker
+      - ./site/temp_data:/app/site/temp_data
     restart: unless-stopped
     networks:
       - rag_network

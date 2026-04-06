@@ -19,11 +19,17 @@ RUN pip install --no-cache-dir -r requirements-worker.txt \
 # Copy application code
 COPY . .
 
-# Create data directory
-RUN mkdir -p /app/data/uploads
+# Ensure shared storage directory exists with proper permissions
+# This may be overridden by Volume mounts, so use -p to not fail if it exists
+RUN mkdir -p /app/data && chmod -R 777 /app/data || true
 
-# Set Python to run in unbuffered mode
+# Set Python to run in unbuffered mode (forces log output immediately to Azure)
 ENV PYTHONUNBUFFERED=1
 
-# Run worker
-CMD ["python", "worker.py"]
+# Set a non-root user for security (optional but recommended)
+# RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+# USER appuser
+
+# Run worker with -u flag to ensure logs flush to stdout immediately
+# This is critical for Azure Container Instances to see logs in real-time
+CMD ["python", "-u", "worker.py"]

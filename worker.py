@@ -105,6 +105,41 @@ except Exception as e:
     sys.exit(1)
 
 
+def retry_with_backoff(func, max_retries=5, initial_delay=2):
+    """
+    Retry a function with exponential backoff.
+    Useful for connecting to external services that may not be immediately available.
+    
+    Args:
+        func: Function to retry
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds before first retry
+        
+    Returns:
+        Result of the function
+        
+    Raises:
+        Exception: If all retries fail
+    """
+    delay = initial_delay
+    last_exception = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                logger.warning(f"⚠️ Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                logger.warning(f"⏳ Retrying in {delay}s...")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)  # Exponential backoff, capped at 30s
+            else:
+                logger.error(f"❌ All {max_retries + 1} attempts failed")
+    
+    raise last_exception
+
+
 class DocumentWorker:
     """Worker for processing document tasks"""
     
@@ -112,16 +147,24 @@ class DocumentWorker:
         logger.info("Initializing DocumentWorker services...")
         
         try:
-            logger.debug(f"Connecting to Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
-            self.queue_service = RedisQueueService(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=settings.REDIS_DB
-            )
+            def connect_redis():
+                logger.debug(f"Connecting to Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+                queue_service = RedisQueueService(
+                    host=settings.REDIS_HOST,
+                    port=settings.REDIS_PORT,
+                    db=settings.REDIS_DB
+                )
+                return queue_service
+            
+            self.queue_service = retry_with_backoff(connect_redis, max_retries=5, initial_delay=2)
             logger.debug("✅ RedisQueueService initialized")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize RedisQueueService: {str(e)}", exc_info=True)
+            logger.error(f"❌ Failed to initialize RedisQueueService after all retries: {str(e)}", exc_info=True)
             logger.error(f"Cannot connect to Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+            logger.error("\nMake sure:")
+            logger.error("  1. Redis server is running and accessible")
+            logger.error("  2. REDIS_HOST and REDIS_PORT are set correctly")
+            logger.error("  3. Firewall/network allows connection to Redis")
             raise
         
         try:
@@ -162,12 +205,21 @@ class DocumentWorker:
             raise
         
         try:
-            logger.debug("Connecting to database...")
-            self.db = SessionLocal()
+            def connect_db():
+                logger.debug("Connecting to database...")
+                db = SessionLocal()
+                return db
+            
+            self.db = retry_with_backoff(connect_db, max_retries=5, initial_delay=2)
             logger.debug("✅ Database connection established")
         except Exception as e:
-            logger.error(f"❌ Failed to connect to database: {str(e)}", exc_info=True)
+            logger.error(f"❌ Failed to connect to database after all retries: {str(e)}", exc_info=True)
             logger.error("Make sure DATABASE_URL is set correctly")
+            logger.error("\nMake sure:")
+            logger.error("  1. PostgreSQL server is running and accessible")
+            logger.error("  2. DATABASE_URL is in correct format: postgresql://user:password@host:5432/dbname")
+            logger.error("  3. Firewall/network allows connection to database")
+            logger.error("  4. Database credentials are correct")
             raise
         
         logger.info("✅ DocumentWorker fully initialized and ready")
