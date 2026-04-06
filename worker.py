@@ -22,15 +22,87 @@ logger = logging.getLogger('DocumentWorker')
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.config import settings
-from app.database.connection import engine, Base, SessionLocal
-from app.database.models import Document, ChildChunk
-from app.queue.service import RedisQueueService
-from app.queue.models import UploadTask, EditTask, TaskResult
-from app.services.chunking_service import ChunkingService
-from app.services.embedding_service import EmbeddingService
-from app.services.cloudinary_service import CloudinaryService
-from app.services.segmentation_service import get_segmentation_service
+
+def validate_environment():
+    """Validate required environment variables before starting worker"""
+    logger.info("Validating environment variables...")
+    logger.info("📌 NOTE: Environment variables can come from:")
+    logger.info("  1. .env file (if present in working directory)")
+    logger.info("  2. System environment variables (Azure, Docker, etc)")
+    logger.info("  3. Container secrets/mounts")
+    logger.info("")
+    
+    required_vars = {
+        'DATABASE_URL': 'PostgreSQL database connection string',
+        'REDIS_HOST': 'Redis server hostname/IP',
+        'GEMINI_API_KEY': 'Google Gemini API key',
+        'CLOUDINARY_CLOUD_NAME': 'Cloudinary cloud name',
+        'CLOUDINARY_API_KEY': 'Cloudinary API key',
+        'CLOUDINARY_API_SECRET': 'Cloudinary API secret'
+    }
+    
+    missing_vars = []
+    for var, description in required_vars.items():
+        value = os.getenv(var, '').strip()
+        if not value:
+            missing_vars.append(f"  - {var}: {description}")
+            logger.warning(f"❌ Missing {var}")
+        else:
+            if var in ['GEMINI_API_KEY', 'CLOUDINARY_API_SECRET']:
+                logger.info(f"✅ {var}: set (masked)")
+            else:
+                logger.info(f"✅ {var}: {value[:50]}..." if len(value) > 50 else f"✅ {var}: {value}")
+    
+    if missing_vars:
+        logger.error("")
+        logger.error("🚨 CRITICAL: Missing required environment variables!")
+        logger.error("Required variables:\n" + "\n".join(missing_vars))
+        logger.error("")
+        logger.error("HOW TO FIX (for different environments):")
+        logger.error("")
+        logger.error("LOCAL DEVELOPMENT:")
+        logger.error("  - Create .env file in project root with all required variables")
+        logger.error("  - Run: python worker.py")
+        logger.error("")
+        logger.error("AZURE CONTAINER INSTANCES:")
+        logger.error("  - Set environment variables when creating container:")
+        logger.error("    az container create --environment-variables DATABASE_URL=... REDIS_HOST=...")
+        logger.error("  - Or use Azure Container Registry with environment variables in deployment")
+        logger.error("")
+        logger.error("DOCKER (local):")
+        logger.error("  - Pass environment variables: docker run -e DATABASE_URL=... -e REDIS_HOST=...")
+        logger.error("  - Or mount .env file: docker run --env-file .env ...")
+        logger.error("")
+        logger.error("DOCKER COMPOSE:")
+        logger.error("  - Set in docker-compose.yml environment section")
+        logger.error("  - Or use .env file in same directory as docker-compose.yml")
+        logger.error("")
+        logger.error("Exiting worker...")
+        return False
+    
+    logger.info("")
+    logger.info("✅ All required environment variables are set")
+    return True
+
+
+try:
+    from app.config import settings
+    from app.database.connection import engine, Base, SessionLocal
+    from app.database.models import Document, ChildChunk
+    from app.queue.service import RedisQueueService
+    from app.queue.models import UploadTask, EditTask, TaskResult
+    from app.services.chunking_service import ChunkingService
+    from app.services.embedding_service import EmbeddingService
+    from app.services.cloudinary_service import CloudinaryService
+    from app.services.segmentation_service import get_segmentation_service
+except Exception as e:
+    logger.error(f"❌ Failed to import required modules: {str(e)}", exc_info=True)
+    logger.error("\nPossible causes:")
+    logger.error("  1. Missing or invalid .env file")
+    logger.error("  2. Missing required environment variables (DATABASE_URL, REDIS_HOST, GEMINI_API_KEY, etc.)")
+    logger.error("  3. Invalid database connection string")
+    logger.error("\nPlease check your environment configuration and try again.")
+    sys.exit(1)
 
 
 class DocumentWorker:
@@ -39,36 +111,64 @@ class DocumentWorker:
     def __init__(self):
         logger.info("Initializing DocumentWorker services...")
         
-        logger.debug(f"Connecting to Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
-        self.queue_service = RedisQueueService(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=settings.REDIS_DB
-        )
-        logger.debug("✅ RedisQueueService initialized")
+        try:
+            logger.debug(f"Connecting to Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+            self.queue_service = RedisQueueService(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB
+            )
+            logger.debug("✅ RedisQueueService initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize RedisQueueService: {str(e)}", exc_info=True)
+            logger.error(f"Cannot connect to Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+            raise
         
-        logger.debug(f"Initializing ChunkingService (size={settings.CHUNK_SIZE}, overlap={settings.CHUNK_OVERLAP})")
-        self.chunking_service = ChunkingService(
-            chunk_size=settings.CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP
-        )
-        logger.debug("✅ ChunkingService initialized")
+        try:
+            logger.debug(f"Initializing ChunkingService (size={settings.CHUNK_SIZE}, overlap={settings.CHUNK_OVERLAP})")
+            self.chunking_service = ChunkingService(
+                chunk_size=settings.CHUNK_SIZE,
+                chunk_overlap=settings.CHUNK_OVERLAP
+            )
+            logger.debug("✅ ChunkingService initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ChunkingService: {str(e)}", exc_info=True)
+            raise
         
-        logger.debug("Initializing EmbeddingService...")
-        self.embedding_service = EmbeddingService()
-        logger.debug("✅ EmbeddingService initialized")
+        try:
+            logger.debug("Initializing EmbeddingService...")
+            self.embedding_service = EmbeddingService()
+            logger.debug("✅ EmbeddingService initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize EmbeddingService: {str(e)}", exc_info=True)
+            logger.error("Make sure GEMINI_API_KEY is set correctly")
+            raise
         
-        logger.debug("Initializing CloudinaryService...")
-        self.cloudinary_service = CloudinaryService()
-        logger.debug("✅ CloudinaryService initialized")
+        try:
+            logger.debug("Initializing CloudinaryService...")
+            self.cloudinary_service = CloudinaryService()
+            logger.debug("✅ CloudinaryService initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize CloudinaryService: {str(e)}", exc_info=True)
+            logger.error("Make sure Cloudinary credentials are set (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET)")
+            raise
         
-        logger.debug("Initializing VietnameseSegmentationService...")
-        self.segmentation_service = get_segmentation_service()
-        logger.debug("✅ VietnameseSegmentationService initialized")
+        try:
+            logger.debug("Initializing VietnameseSegmentationService...")
+            self.segmentation_service = get_segmentation_service()
+            logger.debug("✅ VietnameseSegmentationService initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize VietnameseSegmentationService: {str(e)}", exc_info=True)
+            raise
         
-        logger.debug("Connecting to database...")
-        self.db = SessionLocal()
-        logger.debug("✅ Database connection established")
+        try:
+            logger.debug("Connecting to database...")
+            self.db = SessionLocal()
+            logger.debug("✅ Database connection established")
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to database: {str(e)}", exc_info=True)
+            logger.error("Make sure DATABASE_URL is set correctly")
+            raise
         
         logger.info("✅ DocumentWorker fully initialized and ready")
     
@@ -302,18 +402,28 @@ class DocumentWorker:
     def run(self):
         """Main worker loop"""
         logger.info("="*70)
-        logger.info("🚀 DOCUMENT WORKER STARTING")
+        logger.info("🚀 DOCUMENT WORKER STARTING MAIN LOOP")
         logger.info("="*70)
         
         # Health check
         logger.info("Checking Redis connection...")
-        if not self.queue_service.health_check():
-            logger.error("❌ Redis connection failed!")
+        try:
+            if not self.queue_service.health_check():
+                logger.error("❌ Redis health check failed!")
+                logger.error("Redis is not responding. Check:")
+                logger.error(f"  - Redis server is running at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+                logger.error("  - Network connectivity to Redis")
+                logger.error("  - Redis credentials/authentication")
+                return
+        except Exception as e:
+            logger.error(f"❌ Redis connection check failed: {str(e)}", exc_info=True)
+            logger.error(f"Cannot connect to Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
             return
         
         logger.info("✅ Redis connection successful")
-        logger.info(f"Redis host: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+        logger.info(f"Redis config: {settings.REDIS_HOST}:{settings.REDIS_PORT} db={settings.REDIS_DB}")
         logger.info("⏳ Worker is ready - waiting for tasks...")
+        logger.info("="*70)
         
         task_count = 0
         idle_time = 0
@@ -357,20 +467,50 @@ class DocumentWorker:
             logger.info(f"👋 WORKER STOPPING - Processed {task_count} tasks")
             logger.info("="*70)
         except Exception as e:
-            logger.error("❌ Worker encountered fatal error", exc_info=True)
+            logger.error("❌ Worker encountered error in main loop", exc_info=True)
+            raise
         finally:
             logger.info("Cleaning up database connection...")
-            self.db.close()
-            logger.info("✅ Worker shutdown complete")
+            try:
+                self.db.close()
+                logger.info("✅ Worker shutdown complete")
+            except Exception as e:
+                logger.error(f"Error closing database connection: {str(e)}")
 
 
 if __name__ == "__main__":
-    logger.info("Initializing database tables...")
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-    logger.info("✅ Database tables initialized")
+    logger.info("="*70)
+    logger.info("DOCUMENT WORKER STARTUP")
+    logger.info("="*70)
     
-    logger.info("Starting DocumentWorker...")
-    # Run worker
-    worker = DocumentWorker()
-    worker.run()
+    # Step 1: Validate environment
+    if not validate_environment():
+        logger.error("❌ Environment validation failed - cannot start worker")
+        sys.exit(1)
+    
+    # Step 2: Initialize database tables
+    try:
+        logger.info("Initializing database tables...")
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Database tables initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database tables: {str(e)}", exc_info=True)
+        logger.error("\nPossible causes:")
+        logger.error("  1. Invalid DATABASE_URL or connection string")
+        logger.error("  2. Database server is not accessible from this location")
+        logger.error("  3. Database credentials are incorrect")
+        logger.error("  4. Network/firewall blocking database access")
+        sys.exit(1)
+    
+    # Step 3: Start worker
+    try:
+        logger.info("Starting DocumentWorker...")
+        worker = DocumentWorker()
+        worker.run()
+    except KeyboardInterrupt:
+        logger.info("Shutting down worker...")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"❌ Worker crashed: {str(e)}", exc_info=True)
+        logger.error("\nPlease check the logs above for details and contact support if needed.")
+        sys.exit(1)
