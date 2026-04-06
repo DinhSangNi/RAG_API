@@ -10,6 +10,7 @@ import re
 import os
 import uuid
 import hashlib
+import asyncio
 from datetime import datetime
 
 from app.database import get_db
@@ -171,12 +172,9 @@ async def upload_files(
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    # Create temp upload directory
-    os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
-
     batch_id = str(uuid.uuid4())
     jobs = []
-    queue_service = get_queue_service()
+    loop = asyncio.get_event_loop()
 
     try:
         print(f"\n{'='*70}")
@@ -184,6 +182,12 @@ async def upload_files(
         print(f"{'='*70}")
         print(f"Batch ID: {batch_id}")
         print(f"Files: {len(files)}")
+
+        # Create temp upload directory (blocking - run in executor)
+        def _create_temp_dir():
+            os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
+        
+        await loop.run_in_executor(None, _create_temp_dir)
 
         for file in files:
             if not file.filename:
@@ -193,10 +197,14 @@ async def upload_files(
             temp_file_name = f"{uuid.uuid4()}_{file.filename}"
             temp_file_path = os.path.join(settings.TEMP_UPLOAD_DIR, temp_file_name)
 
-            # Save uploaded file
+            # Save uploaded file (blocking - run in executor)
             contents = await file.read()
-            with open(temp_file_path, "wb") as f:
-                f.write(contents)
+            
+            def _save_file(path, data):
+                with open(path, "wb") as f:
+                    f.write(data)
+            
+            await loop.run_in_executor(None, _save_file, temp_file_path, contents)
 
             print(f"✅ Saved temp file: {temp_file_name} ({len(contents)} bytes)")
 
@@ -215,8 +223,12 @@ async def upload_files(
                 }
             )
             
-            # Push to queue
-            queue_service.push_upload_task(task.to_dict())
+            # Push to queue (blocking - run in executor)
+            def _queue_upload(task_dict):
+                queue_service = get_queue_service()
+                queue_service.push_upload_task(task_dict)
+            
+            await loop.run_in_executor(None, _queue_upload, task.to_dict())
             
             job_response = UploadJobResponse(
                 job_id=task_id,
@@ -357,14 +369,20 @@ async def edit_document(
         
         print(f"✅ Document found: {document.file_name}")
         
-        # Save uploaded file to temp directory
+        # Read file content (async)
+        contents = await file.read()
+        
+        # Save uploaded file to temp directory (blocking - run in executor)
+        loop = asyncio.get_event_loop()
         os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
         temp_file_name = f"edit_{uuid.uuid4()}_{file.filename}"
         temp_file_path = os.path.join(settings.TEMP_UPLOAD_DIR, temp_file_name)
         
-        contents = await file.read()
-        with open(temp_file_path, "wb") as f:
-            f.write(contents)
+        def _save_file():
+            with open(temp_file_path, "wb") as f:
+                f.write(contents)
+        
+        await loop.run_in_executor(None, _save_file)
         print(f"✅ Saved temp file: {temp_file_name}")
         
         # Create edit task
@@ -379,9 +397,12 @@ async def edit_document(
             metadata={'edited_at': str(datetime.now())}
         )
         
-        # Push to queue
-        queue_service = get_queue_service()
-        queue_service.push_edit_task(task.to_dict())
+        # Push to queue (blocking - run in executor)
+        def _queue_task():
+            queue_service = get_queue_service()
+            queue_service.push_edit_task(task.to_dict())
+        
+        await loop.run_in_executor(None, _queue_task)
         
         print(f"\n{'='*70}")
         print(f"✅ DOCUMENT QUEUED FOR EDITING")
