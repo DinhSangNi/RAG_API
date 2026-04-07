@@ -72,12 +72,12 @@ async def _startup():
         from app.queue.service import get_queue_service
         queue_service = get_queue_service()
         # Test connection by pinging
-        ping_result = queue_service._redis.ping()
+        ping_result = queue_service.redis_client.ping()
         if ping_result:
             logger.info(f"  ✅ Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT} (db={settings.REDIS_DB})")
             # Get Redis info
             try:
-                info = queue_service._redis.info()
+                info = queue_service.redis_client.info()
                 logger.info(f"  📊 Redis info: version={info.get('redis_version', 'unknown')}, clients={info.get('connected_clients', 'unknown')}")
             except:
                 pass
