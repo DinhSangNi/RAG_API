@@ -42,20 +42,9 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 150
 
-    # Shared Storage Configuration (for API and Worker communication)
-    # Root storage directory - used for temporary file exchange between API and Worker
-    WEBAPP_STORAGE_HOME: str = "./site"
-    
-    # File Storage Paths
-    DATA_DIR: str = "./data"
-    UPLOAD_DIR: str = "./data/uploads"
-    PROCESSED_DIR: str = "./data/processed"
-    RAW_DIR: str = "./data/raw"
-
-    # Temporary file storage for batch uploads (shared between API and Worker)
-    # Both API (upload) and Worker (processing) use this folder
-    # Format: ${WEBAPP_STORAGE_HOME}/site/temp_data
-    TEMP_UPLOAD_DIR: str = "./site/temp_data"
+    # Raw File Storage - where uploaded files are saved before processing
+    # Hard-coded to /app/data for Docker containers
+    TEMP_UPLOAD_DIR: str = "/app/data/temp_uploads"
 
     # Cloudinary Configuration (Load from .env)
     CLOUDINARY_CLOUD_NAME: str = ""
@@ -70,17 +59,6 @@ class Settings(BaseSettings):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Auto-detect Docker environment and adjust paths
-        if os.path.exists('/app'):
-            self.DATA_DIR = "/app/data"
-            self.UPLOAD_DIR = "/app/data/uploads"
-            self.PROCESSED_DIR = "/app/data/processed"
-            self.RAW_DIR = "/app/data/raw"
-            # Use Azure App Service shared storage path if available
-            if self.WEBAPP_STORAGE_HOME == "./site":
-                self.TEMP_UPLOAD_DIR = "/home/site/temp_data"
-            else:
-                self.TEMP_UPLOAD_DIR = f"{self.WEBAPP_STORAGE_HOME}/site/temp_data"
 
     class Config:
         env_file = ".env"

@@ -173,9 +173,6 @@ async def upload_files(
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    # Create temp upload directory
-    os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
-
     batch_id = str(uuid.uuid4())
     jobs = []
     queue_service = get_queue_service()
@@ -367,7 +364,6 @@ async def edit_document(
         logger.info(f"✅ Document found: {document.file_name}")
         
         # Save uploaded file to temp directory
-        os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
         temp_file_name = f"edit_{uuid.uuid4()}_{file.filename}"
         temp_file_path = os.path.join(settings.TEMP_UPLOAD_DIR, temp_file_name)
         

@@ -60,23 +60,11 @@ async def _startup():
     logger.info("🚀 RAG SERVICE API STARTING UP")
     logger.info("="*70)
     
-    # Create required directories
-    directories = [
-        settings.UPLOAD_DIR,
-        settings.TEMP_UPLOAD_DIR,
-        settings.PROCESSED_DIR,
-        settings.RAW_DIR,
-    ]
+    # Create raw file storage directory
+    os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
     
-    logger.info("\n📁 Creating storage directories:")
-    for directory in directories:
-        os.makedirs(directory, exist_ok=True)
-        logger.info(f"  ✅ {directory}")
-    
-    # Log shared storage configuration
-    logger.info(f"\n🔗 Shared Storage (API & Worker):")
-    logger.info(f"  📦 TEMP_UPLOAD_DIR: {settings.TEMP_UPLOAD_DIR}")
-    logger.info(f"  📦 WEBAPP_STORAGE_HOME: {settings.WEBAPP_STORAGE_HOME}")
+    logger.info("\n📁 Storage directories:")
+    logger.info(f"  ✅ Raw files: {settings.TEMP_UPLOAD_DIR}")
     
     # Check Redis connection
     logger.info("\n🔴 Checking Redis connection...")
