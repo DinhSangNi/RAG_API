@@ -13,12 +13,15 @@ mkdir -p /app/data/temp_uploads
 # ========================================
 echo ""
 echo "📦 Starting Redis Server..."
+# Note: Memory overcommit warning can be suppressed in production
+# For Azure Container Instances, this warning is expected and safe to ignore
 redis-server --port 6379 \
     --maxmemory 256mb \
     --maxmemory-policy allkeys-lru \
     --save 900 1 \
     --logfile /proc/self/fd/1 \
     --daemonize no \
+    --stop-writes-on-bgsave-error no \
     &
 REDIS_PID=$!
 echo "✅ Redis started (PID: $REDIS_PID)"
