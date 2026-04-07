@@ -316,9 +316,10 @@ class DocumentWorker:
             # Update status to 'indexing'
             content_hash = hashlib.sha256(new_content.encode()).hexdigest()
             document.content_hash = content_hash
+            old_status = document.status
             document.status = "indexing"
             self.db.commit()
-            logger.info(f"[{task.task_id}] 📌 Status transition: pending → indexing")
+            logger.info(f"[{task.task_id}] 📌 Status transition: {old_status} → indexing")
             
             # Chunk new content
             logger.info(f"[{task.task_id}] ✂️ Step 4: Re-chunking document...")

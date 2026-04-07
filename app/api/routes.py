@@ -386,6 +386,11 @@ async def edit_document(
             metadata={'edited_at': str(datetime.now())}
         )
         
+        # Update document status to "updating" BEFORE pushing to queue
+        document.status = "updating"
+        db.commit()
+        logger.info(f"✅ Document status updated: updating")
+        
         # Push to queue and verify
         logger.info(f"🔄 Pushing to Redis queue...")
         queue_service = get_queue_service()
