@@ -22,8 +22,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # Copy application code
 COPY . .
 
-# Ensure data directory exists with proper permissions
-RUN mkdir -p /app/data/temp_uploads && chmod -R 777 /app/data
+# Ensure shared storage directory exists with proper permissions
+# This may be overridden by Volume mounts, so use -p to not fail if it exists
+# RUN mkdir -p /app/data && chmod -R 777 /app/data || true
+RUN mkdir -p /home/site/temp_data && ln -s /home/site/temp_data /app/data
 
 # Set Python to run in unbuffered mode for better logging
 ENV PYTHONUNBUFFERED=1
