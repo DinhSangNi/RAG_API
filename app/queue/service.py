@@ -36,17 +36,17 @@ class RedisQueueService:
         return task_id
     
     def pop_upload_task(self) -> Optional[Dict[str, Any]]:
-        """Pop job from upload queue (blocking)"""
-        result = self.redis_client.blpop(self.upload_queue, timeout=0)
+        """Pop job from upload queue (non-blocking)"""
+        result = self.redis_client.lpop(self.upload_queue)
         if result:
-            return json.loads(result[1])
+            return json.loads(result)
         return None
     
     def pop_edit_task(self) -> Optional[Dict[str, Any]]:
-        """Pop job from edit queue (blocking)"""
-        result = self.redis_client.blpop(self.edit_queue, timeout=0)
+        """Pop job from edit queue (non-blocking)"""
+        result = self.redis_client.lpop(self.edit_queue)
         if result:
-            return json.loads(result[1])
+            return json.loads(result)
         return None
     
     def set_result(self, task_id: str, result_data: Dict[str, Any]) -> None:
