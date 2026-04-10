@@ -129,6 +129,7 @@ class EditDocumentResponse(BaseModel):
     """
     Response schema for document edit
     """
+    job_id: str
     document_id: str
     file_name: str
     status: str
@@ -139,11 +140,12 @@ class EditDocumentResponse(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "job_id": "123e4567-e89b-12d3-a456-426614174001",
                 "document_id": "123e4567-e89b-12d3-a456-426614174000",
                 "file_name": "document.md",
-                "status": "completed",
-                "message": "Document updated and re-embedded successfully",
-                "chunks_created": 15,
-                "old_chunks_deleted": 12
+                "status": "queued",
+                "message": "Document queued for re-indexing",
+                "chunks_created": 0,
+                "old_chunks_deleted": 0
             }
         }

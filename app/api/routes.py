@@ -403,6 +403,7 @@ async def edit_document(
         logger.info(f"{'='*70}\n")
         
         return EditDocumentResponse(
+            job_id=task_id,
             document_id=document_id,
             file_name=document.file_name,
             status="queued",
