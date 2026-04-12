@@ -212,6 +212,7 @@ async def upload_files(
                 chunk_size=settings.CHUNK_SIZE,
                 chunk_overlap=settings.CHUNK_OVERLAP,
                 metadata={
+                    'task_id': task_id,  # Store task_id for status lookup
                     'batch_id': batch_id,
                     'uploaded_at': str(datetime.now())
                 }
@@ -256,10 +257,10 @@ async def get_job_status(
     db: Session = Depends(get_db)
 ):
     """
-    Get status of a document processing job (job_id is the document_id)
+    Get status of a document processing job (job_id can be either document_id or task_id)
 
     Args:
-        job_id: Document ID (used as job ID for backward compatibility)
+        job_id: Document ID or Task ID (task_id is mapped to document via metadata)
 
     Returns:
         JobStatusResponse with document status
@@ -269,8 +270,15 @@ async def get_job_status(
     - completed: Document successfully processed
     """
     try:
-        # job_id is actually the document_id (since we use synchronous processing)
+        # First try: job_id is the document_id
         document = db.query(Document).filter(Document.id == job_id).first()
+
+        # Second try: job_id is the task_id (search by metadata JSON)
+        if not document:
+            from sqlalchemy import text
+            document = db.query(Document).from_statement(
+                text(f"SELECT * FROM documents WHERE metadata->>'task_id' = :job_id LIMIT 1")
+            ).params(job_id=job_id).first()
 
         if not document:
             raise HTTPException(status_code=404, detail=f"Document not found: {job_id}")
@@ -284,7 +292,7 @@ async def get_job_status(
             file_name=document.file_name,
             document_id=job_id,
             cloudinary_url=document.file_path,
-            progress=100 if document.status == "completed" else 0,
+            progress={"status": document.status, "current": chunk_count, "total": chunk_count} if document.status == "completed" else {"status": "indexing", "current": 0, "total": chunk_count},
             error=None,
             timing={},
             message=f"Document status: {document.status}, chunks: {chunk_count}"
