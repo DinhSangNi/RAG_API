@@ -364,8 +364,16 @@ async def edit_document(
         logger.info(f"✏️ QUEUING DOCUMENT EDIT: {document_id}")
         logger.info(f"{'='*70}")
         
-        # Verify document exists
+        # Verify document exists (try both document_id and task_id)
         document = db.query(Document).filter(Document.id == document_id).first()
+        
+        # If not found by document_id, try by task_id in metadata
+        if not document:
+            from sqlalchemy import text
+            document = db.query(Document).from_statement(
+                text(f"SELECT * FROM documents WHERE metadata->>'task_id' = :doc_id LIMIT 1")
+            ).params(doc_id=document_id).first()
+        
         if not document:
             raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
         
@@ -386,7 +394,7 @@ async def edit_document(
         task_id = str(uuid.uuid4())
         task = EditTask(
             task_id=task_id,
-            document_id=document_id,
+            document_id=str(document.id),  # Convert UUID to string for JSON serialization
             file_path=temp_file_path,
             file_name=file.filename or document.file_name,
             chunk_size=settings.CHUNK_SIZE,
