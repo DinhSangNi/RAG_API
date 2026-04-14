@@ -77,27 +77,39 @@ class RAGService:
             convert_system_message_to_human=True
         )
         
-        # Main RAG prompt
+        # Unified RAG prompt - extract person + generate answer in one call
         self.prompt = ChatPromptTemplate.from_messages([
-            ("human", """Bạn là trợ lý AI. Trả lời câu hỏi dựa trên CONTEXT được cung cấp.
+            ("human", """Bạn là trợ lý AI. Thực hiện 2 nhiệm vụ:
+
+NHIỆM VỤ 1: Trích xuất DANH SÁCH tất cả người CHÍNH liên quan đến câu hỏi
+⚠️ QUAN TRỌNG: 
+- Trích xuất người từ CẢ QUESTION + ANSWER
+- Chỉ những người là CHỦ ĐỀ CHÍNH, không phải người nhân vật khác
+- Ví dụ: Q:"Võ Nguyên Giáp có vợ tên gì?" A:"Nguyễn Thị Quang Thái" 
+  → NGƯỜI: "Võ Nguyên Giáp, Nguyễn Thị Quang Thái"
+- Ví dụ: Q:"Họ có con không?" (context: VNG, NTQT) A:"Có 3 đứa con"
+  → NGƯỜI: "Võ Nguyên Giáp, Nguyễn Thị Quang Thái"
+- Nếu không có người cụ thể, ghi: NONE
+
+NHIỆM VỤ 2: Trả lời câu hỏi dựa trên CONTEXT
 
 NGUYÊN TẮC:
 1) CHỈ trả lời dựa trên thông tin trong CONTEXT.
-2) Nếu CONTEXT không có đủ thông tin để trả lời → trả lời: "Tôi không tìm thấy thông tin này trong tài liệu."
+2) Nếu CONTEXT không có đủ thông tin → trả lời: "Tôi không tìm thấy thông tin này trong tài liệu."
 3) Trả lời NGẮN GỌN, CHÍNH XÁC, bằng tiếng Việt
 4) Nếu có nhiều tên gọi (bí danh/tên khác) của cùng một người, coi chúng là 1 thực thể.
 5) Kết hợp các sự kiện liên quan trực tiếp để trả lời.
 6) Không bịa đặt thông tin không có trong CONTEXT.
-7) Phát hiện GIẢ ĐỊNH SAI: nếu câu hỏi chứa giả định sai, hãy xác nhận đó là sai và giải thích.
-
-
+7) Phát hiện GIẢ ĐỊNH SAI: nếu câu hỏi chứa giả định sai, hãy xác nhận và giải thích.
 
 CONTEXT:
 {context}
 
 CÂU HỎI: {question}
 
-TRẢ LỜI:"""),
+===== OUTPUT FORMAT =====
+NGƯỜI: [Tên người 1, Tên người 2, ... hoặc NONE]
+TRANSWER: [Câu trả lời chi tiết]"""),
         ])
         
         # Build chains
@@ -416,11 +428,87 @@ TRẢ LỜI:"""),
             }
         }
     
+    
+    def _extract_and_answer(self, docs: List[Dict[str, Any]], question: str, previous_persons: Optional[List[str]] = None) -> tuple[Optional[List[str]], str]:
+        """
+        Extract active persons (list) + generate answer in a SINGLE LLM call
+        LLM trích xuất persons từ cả question + answer output
+        Returns: (active_persons_list, answer)
+        
+        Output format expected:
+        NGƯỜI: [Name1, Name2, ... hoặc NONE]
+        TRANSWER: [Answer text]
+        """
+        try:
+            formatted_context = self._format_docs(docs)
+            
+            # Build enhanced question with previous persons context
+            enhanced_question = question
+            if previous_persons:
+                persons_list = ", ".join(previous_persons)
+                enhanced_question = f"[Bối cảnh trước: người/những người được hỏi là {persons_list}]\n\nCâu hỏi: {question}"
+            
+            response = self.rag_chain.invoke({
+                "docs": docs,
+                "question": enhanced_question
+            })
+            
+            response = (response or "").strip()
+            
+            # Parse response
+            persons = None
+            answer = response
+            
+            # Try to extract structured format
+            lines = response.split('\n')
+            extracted_persons_str = None
+            extracted_answer = None
+            
+            for i, line in enumerate(lines):
+                if line.startswith('NGƯỜI:'):
+                    extracted_persons_str = line.replace('NGƯỜI:', '').strip()
+                elif line.startswith('TRANSWER:'):
+                    # Get this line and all subsequent lines as answer
+                    extracted_answer = line.replace('TRANSWER:', '').strip()
+                    if i + 1 < len(lines):
+                        extracted_answer += '\n' + '\n'.join(lines[i+1:])
+                    break
+            
+            # Parse persons extracted by LLM (from both question + answer)
+            if extracted_persons_str and extracted_persons_str.upper() != "NONE":
+                # Split by comma and clean up each name
+                persons_list = [p.strip() for p in extracted_persons_str.split(',')]
+                cleaned_persons = []
+                
+                for p in persons_list:
+                    # Clean up each person name
+                    p = re.sub(r'^[-\s:"\']*|[-\s:"\']*$', '', p).strip()
+                    if len(p) > 1:
+                        cleaned_persons.append(p)
+                
+                if cleaned_persons:
+                    persons = cleaned_persons
+            
+            if extracted_answer:
+                answer = extracted_answer.strip()
+            
+            # Normalize fallback
+            if not answer or ("không tìm thấy" in answer.lower() and "tài liệu" in answer.lower()):
+                answer = "Tôi không tìm thấy thông tin này trong tài liệu."
+            
+            return persons, answer
+            
+        except Exception as e:
+            print(f"⚠️  Error in _extract_and_answer: {e}")
+            return None, "Có lỗi xảy ra khi xử lý câu hỏi."
+    
     def _extract_active_person(self, question: str, docs: List[Dict[str, Any]]) -> Optional[str]:
         """
         Extract the main person being asked about from the question
         E.g. "Hồ Chí Minh có con không" → "Hồ Chí Minh"
         E.g. "Ai là Hồ Chí Minh" → "Hồ Chí Minh"
+        
+        DEPRECATED: Use _extract_and_answer() instead for unified prompt
         """
         try:
             # Simple extraction prompt
@@ -455,6 +543,7 @@ Trả lời:""")
         self, 
         question: str, 
         document_ids: Optional[List[str]] = None,
+        previous_persons: Optional[List[str]] = None,
         verbose: bool = False
     ) -> Dict[str, Any]:
         """
@@ -463,6 +552,7 @@ Trả lời:""")
         Args:
             question: User question
             document_ids: Optional list of document IDs to scope search
+            previous_persons: Optional list of persons from previous question for resolving pronouns
             verbose: Print detailed context
         
         Returns:
@@ -523,62 +613,38 @@ Trả lời:""")
                     print(f"   Headers: {doc.get('h1', '')} / {doc.get('h2', '')}")
                     print(f"   Preview: {doc.get('content', '')[:200]}...")
         
-        # Generate answer based on source type
-        print(f"\n💬 CHAT[{trace}] generating answer...")
+        # Generate answer + extract active person in ONE unified prompt call
+        print(f"\n💬 CHAT[{trace}] generating answer + extracting person...")
         generation_started_at = time.perf_counter()
         
+        # Prepare docs for LLM (reformat if needed for summary source)
+        llm_docs = docs
         if source == 'summary':
-            # Use summary documents - format differently
-            formatted_docs = []
+            # Reformat summary documents for context
+            llm_docs = []
             for doc in docs:
-                formatted_docs.append({
+                llm_docs.append({
                     'content': doc.get('summary_content', ''),
                     'h1': 'Summary',
                     'h2': ''
                 })
-            # Log context and question being sent to LLM
-            formatted_context = self._format_docs(formatted_docs)
-            print(f"\n{'='*80}")
-            print(f"📤 SENDING TO LLM [trace={trace}] | Source: {source}")
-            print(f"{'='*80}")
-            print(f"❓ QUESTION:\n{question}")
-            print(f"\n📝 CONTEXT:\n{formatted_context}")
-            print(f"{'='*80}\n")
-            answer = self.rag_chain.invoke({"docs": formatted_docs, "question": question})
-        elif source == 'parent_chunks_from_children':
-            # Use parent chunks (already in correct format)
-            # Log context and question being sent to LLM
-            formatted_context = self._format_docs(docs)
-            print(f"\n{'='*80}")
-            print(f"📤 SENDING TO LLM [trace={trace}] | Source: {source}")
-            print(f"{'='*80}")
-            print(f"❓ QUESTION:\n{question}")
-            print(f"\n📝 CONTEXT:\n{formatted_context}")
-            print(f"{'='*80}\n")
-            answer = self.rag_chain.invoke({"docs": docs, "question": question})
-        else:
-            # Use child chunks or legacy chunks
-            # Log context and question being sent to LLM
-            formatted_context = self._format_docs(docs)
-            print(f"\n{'='*80}")
-            print(f"📤 SENDING TO LLM [trace={trace}] | Source: {source}")
-            print(f"{'='*80}")
-            print(f"❓ QUESTION:\n{question}")
-            print(f"\n📝 CONTEXT:\n{formatted_context}")
-            print(f"{'='*80}\n")
-            answer = self.rag_chain.invoke({"docs": docs, "question": question})
         
-        answer = (answer or "").strip()
+        # Log context being sent to LLM
+        formatted_context = self._format_docs(llm_docs)
+        print(f"\n{'='*80}")
+        print(f"📤 SENDING TO LLM [trace={trace}] | Source: {source}")
+        print(f"{'='*80}")
+        print(f"❓ QUESTION:\n{question}")
+        print(f"\n📝 CONTEXT:\n{formatted_context}")
+        print(f"{'='*80}\n")
+        
+        # Extract persons + generate answer in ONE call
+        active_persons, answer = self._extract_and_answer(llm_docs, question, previous_persons=previous_persons)
+        
         generation_elapsed = time.perf_counter() - generation_started_at
         
-        # Normalize fallback
-        if not answer or ("không tìm thấy" in answer.lower() and "tài liệu" in answer.lower()):
-            answer = "Tôi không tìm thấy thông tin này trong tài liệu."
-
-        # Extract active person being asked about
-        active_person = self._extract_active_person(question, docs)
-        if active_person:
-            print(f"👤 Active person: {active_person}")
+        if active_persons:
+            print(f"👤 Active persons: {', '.join(active_persons)}")
 
         total_elapsed = time.perf_counter() - chat_started_at
         
@@ -589,7 +655,7 @@ Trả lời:""")
         
         return {
             'answer': answer,
-            'active_person': active_person,
+            'active_persons': active_persons,
             'chunks': docs[:10],  # Return top 10 for reference
             'metadata': {
                 **metadata,

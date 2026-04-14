@@ -126,6 +126,7 @@ async def rag_chat(
     result = await rag_service.chat(
         question=request.question,
         document_ids=request.document_ids,
+        previous_persons=request.previous_persons,
         verbose=request.verbose
     )
     
@@ -141,7 +142,7 @@ async def rag_chat(
     return ChatResponse(
         question=request.question,
         answer=result['answer'],
-        active_person=result.get('active_person'),
+        active_persons=result.get('active_persons'),
         metadata=simplified_metadata
     )
 

@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     """
     question: str = Field(..., description="Question to ask")
     document_ids: Optional[List[str]] = Field(default=None, description="Filter by document IDs (UUIDs)")
+    previous_persons: Optional[List[str]] = Field(default=None, description="List of persons from previous question for context")
     verbose: bool = Field(default=False, description="Show context in response")
 
     class Config:
@@ -47,7 +48,7 @@ class ChatResponse(BaseModel):
     """
     question: str
     answer: str
-    active_person: Optional[str] = None
+    active_persons: Optional[List[str]] = None
     metadata: Dict[str, Any]
 
 
