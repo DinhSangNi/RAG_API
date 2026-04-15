@@ -142,7 +142,7 @@ async def rag_chat(
     return ChatResponse(
         question=request.question,
         answer=result['answer'],
-        active_persons=result.get('active_persons'),
+        active_person=result.get('active_person'),
         metadata=simplified_metadata
     )
 

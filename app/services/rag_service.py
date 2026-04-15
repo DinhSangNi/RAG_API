@@ -640,12 +640,12 @@ Trả lời:""")
         print(f"{'='*80}\n")
         
         # Extract persons + generate answer in ONE call
-        active_persons, answer = self._extract_and_answer(llm_docs, question, previous_persons=previous_persons)
+        active_person, answer = self._extract_and_answer(llm_docs, question, previous_persons=previous_persons)
         
         generation_elapsed = time.perf_counter() - generation_started_at
         
-        if active_persons:
-            print(f"👤 Active person: {active_persons}")
+        if active_person:
+            print(f"👤 Active person: {active_person}")
 
         total_elapsed = time.perf_counter() - chat_started_at
         
@@ -656,7 +656,7 @@ Trả lời:""")
         
         return {
             'answer': answer,
-            'active_persons': active_persons,
+            'active_person': active_person,
             'chunks': docs[:10],  # Return top 10 for reference
             'metadata': {
                 **metadata,

@@ -48,7 +48,7 @@ class ChatResponse(BaseModel):
     """
     question: str
     answer: str
-    active_persons: Optional[str] = None
+    active_person: Optional[str] = None
     metadata: Dict[str, Any]
 
 
