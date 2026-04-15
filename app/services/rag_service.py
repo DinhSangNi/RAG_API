@@ -429,11 +429,11 @@ TRANSWER: [Câu trả lời chi tiết]"""),
         }
     
     
-    def _extract_and_answer(self, docs: List[Dict[str, Any]], question: str, previous_persons: Optional[List[str]] = None) -> tuple[Optional[List[str]], str]:
+    def _extract_and_answer(self, docs: List[Dict[str, Any]], question: str, previous_persons: Optional[List[str]] = None) -> tuple[Optional[str], str]:
         """
-        Extract active persons (list) + generate answer in a SINGLE LLM call
+        Extract main person entity + generate answer in a SINGLE LLM call
         LLM trích xuất persons từ cả question + answer output
-        Returns: (active_persons_list, answer)
+        Returns: (main_person_name, answer)
         
         Output format expected:
         NGƯỜI: [Name1, Name2, ... hoặc NONE]
@@ -486,8 +486,9 @@ TRANSWER: [Câu trả lời chi tiết]"""),
                     if len(p) > 1:
                         cleaned_persons.append(p)
                 
+                # Return only the first (main) person
                 if cleaned_persons:
-                    persons = cleaned_persons
+                    persons = cleaned_persons[0]
             
             if extracted_answer:
                 answer = extracted_answer.strip()
@@ -644,7 +645,7 @@ Trả lời:""")
         generation_elapsed = time.perf_counter() - generation_started_at
         
         if active_persons:
-            print(f"👤 Active persons: {', '.join(active_persons)}")
+            print(f"👤 Active person: {active_persons}")
 
         total_elapsed = time.perf_counter() - chat_started_at
         
