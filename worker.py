@@ -9,7 +9,22 @@ import uuid
 import hashlib
 import logging
 import time
+import re
+import html
+import io
+import tempfile
 from datetime import datetime
+from pathlib import Path
+
+try:
+    from markitdown import MarkItDown
+except ImportError:
+    MarkItDown = None
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 # Configure logging
 logging.basicConfig(
@@ -66,6 +81,212 @@ def format_bytes(bytes_value):
             return f"{bytes_value:.2f} {unit}"
         bytes_value /= 1024.0
     return f"{bytes_value:.2f} TB"
+
+
+def clean_wikipedia_html(html_content: str) -> str:
+    """
+    Clean Wikipedia HTML by removing unwanted elements and classes
+    
+    Args:
+        html_content: Raw HTML content as string
+        
+    Returns:
+        Cleaned HTML content
+    """
+    if BeautifulSoup is None:
+        logger.warning("[Clean] BeautifulSoup not available, skipping HTML cleaning")
+        return html_content
+    
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+        content = soup.find("div", class_="mw-parser-output")
+        
+        if not content:
+            logger.warning("[Clean] Could not find mw-parser-output div, using full content")
+            content = soup
+        
+        # Remove unwanted tags
+        tags_without_class = ['audio', 'style', 'img', 'sup', 'link', 'input']
+        for tag in tags_without_class:
+            for element in content.find_all(tag):
+                element.decompose()
+        
+        # Remove specific tags with certain classes
+        tags_with_class = [
+            ('ol', 'references'),
+            ('span', 'mw-editsection'),
+            ('div', 'hatnote'),
+            ('div', 'navbox'),
+            ('div', 'navbox-styles'),
+            ('div', 'metadata'),
+            ('div', 'toc'),
+            ('table', 'navbox-inner'),
+            ('table', 'navbox'),
+            ('table', 'sidebar'),
+            ('table', 'infobox'),
+            ('table', 'metadata'),
+            ('span', 'languageicon'),
+            ('span', 'tocnumber'),
+            ('span', 'toctext'),
+            ('span', 'reference-accessdate'),
+            ('span', 'Z3988'),
+            ('cite', None),
+        ]
+        
+        for tag, class_name in tags_with_class:
+            if class_name:
+                for element in content.find_all(tag, class_=class_name):
+                    element.decompose()
+            else:
+                for element in content.find_all(tag):
+                    element.decompose()
+        
+        # Convert cquote tables to paragraphs
+        for table in content.find_all('table', class_="cquote"):
+            quote_text = table.get_text(separator=" ", strip=True)
+            p = soup.new_tag('p')
+            p.string = quote_text
+            table.replace_with(p)
+        
+        # Remove empty paragraphs
+        for p in content.find_all('p'):
+            if not p.get_text(strip=True):
+                p.decompose()
+        
+        # Remove empty spans with IDs
+        for span in content.find_all('span'):
+            if span.get('id') and not span.get_text(strip=True):
+                span.decompose()
+        
+        # Convert figure captions
+        for figure in content.find_all('figure'):
+            figcaption = figure.find('figcaption')
+            if figcaption:
+                new_p = soup.new_tag('p')
+                new_p.string = f"[Hình ảnh: {figcaption.get_text(strip=True)}]"
+                figure.replace_with(new_p)
+            else:
+                figure.decompose()
+        
+        # Remove link, span, bold wrapper tags but keep content
+        for a_tag in content.find_all('a'):
+            a_tag.unwrap()
+        
+        for span in content.find_all('span'):
+            span.unwrap()
+        
+        for tag in content.find_all(['b']):
+            tag.unwrap()
+        
+        # Remove specific sections (References, See Also, etc.)
+        sections_to_remove = [
+            "Tham_khảo", "Tài liệu tham khảo", "Chú giải", "Liên_kết_ngoài", 
+            "Danh_mục", "Ghi_chú", "Thư_mục_hậu_cần", "Đọc_thêm", "Chú_thích",
+            "Thư_mục", "Nguồn_thứ_cấp", "Nguồn_sơ_cấp", "Nguồn_trích_dẫn"
+        ]
+        
+        for section_id in sections_to_remove:
+            header = content.find(['h2', 'h3'], id=section_id)
+            if header:
+                for sibling in header.find_next_siblings():
+                    if sibling.name in ['h2', 'h3']:
+                        break
+                    sibling.decompose()
+                header.decompose()
+        
+        # Remove empty list items
+        for li in content.find_all('li'):
+            if not li.get_text(strip=True):
+                li.decompose()
+        
+        # Clean attributes
+        for tag in content.find_all(True):
+            if tag.has_attr('class'):
+                del tag['class']
+            if tag.has_attr('style'):
+                del tag['style']
+            if tag.has_attr('id') and tag.name not in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                del tag['id']
+            if tag.has_attr('dir'):
+                del tag['dir']
+            if tag.has_attr('lang'):
+                del tag['lang']
+        
+        return str(content)
+    
+    except Exception as e:
+        logger.warning(f"[Clean] BeautifulSoup cleaning failed: {str(e)}, returning original content")
+        return html_content
+
+
+def normalize_markdown(md_text: str) -> str:
+    """
+    Normalize markdown content for better structure
+    
+    Args:
+        md_text: Markdown text to normalize
+        
+    Returns:
+        Normalized markdown text
+    """
+    lines = md_text.split('\n')
+    normalized_lines = []
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        
+        # Keep headers as-is
+        if line.strip().startswith('#'):
+            normalized_lines.append(line)
+            i += 1
+            continue
+        
+        # Keep special lines (lists, tables, quotes, code)
+        if (line.strip().startswith(('* ', '- ', '+ ', '|', '>')) or 
+            re.match(r'^\s*\d+\.', line) or
+            line.strip() == '' or
+            line.strip().startswith(':')):
+            normalized_lines.append(line)
+            i += 1
+            continue
+        
+        # Merge consecutive non-special lines into paragraphs
+        paragraph = line
+        i += 1
+        while i < len(lines):
+            next_line = lines[i]
+            # Stop at special lines
+            if (next_line.strip() == '' or 
+                next_line.strip().startswith(('#', '* ', '- ', '+ ', '|', '>', ':')) or
+                re.match(r'^\s*\d+\.', next_line)):
+                break
+            # Merge line
+            paragraph += ' ' + next_line.strip()
+            i += 1
+        
+        normalized_lines.append(paragraph)
+    
+    # Join lines
+    result = '\n'.join(normalized_lines)
+    
+    # Normalize bullet points to *
+    result = re.sub(r'^\s*[-+]\s+', '* ', result, flags=re.MULTILINE)
+    
+    # Remove trailing spaces
+    result = re.sub(r' +\n', '\n', result)
+    
+    # Normalize block quotes
+    result = re.sub(r'^:   \*', '>   *', result, flags=re.MULTILINE)
+    result = re.sub(r'^:\s+', '> ', result, flags=re.MULTILINE)
+    
+    # Ensure blank line before headers
+    result = re.sub(r'\n(#{1,6}\s)', r'\n\n\1', result)
+    
+    # Remove excessive blank lines (keep max 2)
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    
+    return result.strip()
 
 
 class DocumentWorker:
@@ -125,6 +346,77 @@ class DocumentWorker:
         
         logger.info("✅ DocumentWorker fully initialized\n")
     
+    def convert_html_to_markdown(self, html_content: str) -> str:
+        """
+        Convert HTML content to Markdown format with cleaning and normalization
+        
+        Pipeline: Clean HTML → Convert to Markdown → Normalize Markdown
+        """
+        logger.info("[Convert] Starting HTML → Markdown pipeline")
+        
+        # Step 1: Clean HTML using BeautifulSoup
+        logger.info("[Convert] Step 1: Cleaning HTML with BeautifulSoup...")
+        cleaned_html = clean_wikipedia_html(html_content)
+        
+        # Step 2: Convert to Markdown using MarkItDown
+        logger.info("[Convert] Step 2: Converting to Markdown with MarkItDown...")
+        markdown_content = None
+        
+        try:
+            if MarkItDown is not None:
+                md = MarkItDown()
+                
+                # Write cleaned HTML to temp file
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as tmp:
+                    tmp.write(cleaned_html)
+                    tmp_path = tmp.name
+                
+                try:
+                    result = md.convert(tmp_path)
+                    markdown_content = result.text_content
+                    logger.info("[Convert] ✅ MarkItDown conversion successful")
+                except Exception as e:
+                    logger.warning(f"[Convert] MarkItDown conversion failed: {str(e)}")
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+        except Exception as e:
+            logger.warning(f"[Convert] MarkItDown initialization error: {str(e)}")
+        
+        # Fallback to regex conversion if MarkItDown fails
+        if markdown_content is None:
+            logger.info("[Convert] Using regex fallback for HTML → Markdown")
+            text = re.sub(r'<style[^>]*>.*?</style>', '', cleaned_html, flags=re.DOTALL)
+            text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
+            text = re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1', text, flags=re.DOTALL)
+            text = re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1', text, flags=re.DOTALL)
+            text = re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1', text, flags=re.DOTALL)
+            text = re.sub(r'<h4[^>]*>(.*?)</h4>', r'#### \1', text, flags=re.DOTALL)
+            text = re.sub(r'<h5[^>]*>(.*?)</h5>', r'##### \1', text, flags=re.DOTALL)
+            text = re.sub(r'<h6[^>]*>(.*?)</h6>', r'###### \1', text, flags=re.DOTALL)
+            text = re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', text, flags=re.DOTALL)
+            text = re.sub(r'<li[^>]*>(.*?)</li>', r'- \1\n', text, flags=re.DOTALL)
+            text = re.sub(r'<ul[^>]*>|</ul>', '', text)
+            text = re.sub(r'<ol[^>]*>|</ol>', '', text)
+            text = re.sub(r'<br\s*/?>', '\n', text)
+            text = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', text, flags=re.DOTALL)
+            text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', text, flags=re.DOTALL)
+            text = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', text, flags=re.DOTALL)
+            text = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', text, flags=re.DOTALL)
+            text = re.sub(r'<a[^>]*href=["\']([^"\']*)["\'][^>]*>(.*?)</a>', r'[\2](\1)', text, flags=re.DOTALL)
+            text = re.sub(r'<[^>]+>', '', text)
+            text = html.unescape(text)
+            text = re.sub(r'\n\n\n+', '\n\n', text)
+            markdown_content = text.strip()
+            logger.info("[Convert] ✅ Regex fallback conversion successful")
+        
+        # Step 3: Normalize Markdown
+        logger.info("[Convert] Step 3: Normalizing Markdown structure...")
+        normalized_markdown = normalize_markdown(markdown_content)
+        logger.info("[Convert] ✅ Markdown normalization complete")
+        
+        return normalized_markdown
+    
     def process_upload_task(self, task: UploadTask) -> TaskResult:
         """Process document upload task with detailed logging"""
         logger.info("\n" + "="*70)
@@ -144,6 +436,24 @@ class DocumentWorker:
                 content = f.read()
             
             file_size = os.path.getsize(task.file_path)
+            original_filename = task.file_name
+            
+            # Check if file is HTML and convert to Markdown
+            if task.file_name.lower().endswith('.html'):
+                logger.info(f"[{task.task_id}] 🔄 HTML file detected, converting to Markdown...")
+                content = self.convert_html_to_markdown(content)
+                
+                # Save converted Markdown file to data/temp_uploads
+                md_filename = original_filename.rsplit('.', 1)[0] + '.md'
+                md_file_path = os.path.join(settings.TEMP_UPLOAD_DIR, md_filename)
+                
+                os.makedirs(settings.TEMP_UPLOAD_DIR, exist_ok=True)
+                with open(md_file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                
+                logger.info(f"[{task.task_id}] ✅ Markdown saved: {md_filename}")
+                logger.info(f"[{task.task_id}]    Path: {md_file_path}")
+            
             content_hash = hashlib.sha256(content.encode()).hexdigest()
             logger.info(f"[{task.task_id}] ✅ File loaded: {format_bytes(file_size)}")
             logger.info(f"[{task.task_id}]    Hash: {content_hash[:16]}...")
