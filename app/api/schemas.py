@@ -150,3 +150,44 @@ class EditDocumentResponse(BaseModel):
                 "old_chunks_deleted": 0
             }
         }
+
+
+class BaselineTestRequest(BaseModel):
+    """
+    Request schema for LLM baseline test (without RAG)
+    Used to detect hallucinations in raw model output
+    """
+    question: str = Field(..., description="Question to ask the LLM directly")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "question": "Hồ Chí Minh sinh năm bao nhiêu?"
+            }
+        }
+
+
+class BaselineTestResponse(BaseModel):
+    """
+    Response schema for LLM baseline test
+    Contains raw LLM output without context from documents
+    """
+    question: str
+    answer: str
+    model: str
+    temperature: float
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "question": "Hồ Chí Minh sinh năm bao nhiêu?",
+                "answer": "Hồ Chí Minh sinh năm 1890",
+                "model": "gemini-2.5-flash-lite",
+                "temperature": 0.1,
+                "metadata": {
+                    "model_type": "baseline_test",
+                    "description": "Raw LLM output without RAG context - use to detect hallucinations"
+                }
+            }
+        }

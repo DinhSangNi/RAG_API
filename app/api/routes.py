@@ -19,6 +19,8 @@ from app.api.schemas import (
     DocumentResponse,
     ChatRequest,
     ChatResponse,
+    BaselineTestRequest,
+    BaselineTestResponse,
     UploadJobResponse,
     BatchUploadResponse,
     JobStatusResponse,
@@ -147,9 +149,77 @@ async def rag_chat(
     )
 
 
+@router.post("/baseline-test", response_model=BaselineTestResponse)
+async def baseline_test(
+    request: BaselineTestRequest
+):
+    """
+    Test Gemini API directly WITHOUT RAG context
+    
+    Purpose: Measure hallucination rate of raw LLM model as baseline
+    - No documents are retrieved
+    - Pure LLM output to detect model-specific hallucinations
+    - Compare with /chat endpoint results to evaluate RAG effectiveness
+    
+    Example questions to test hallucination:
+    - "Vũ nữ nổi tiếng nhất thế giới là ai?"
+    - "Nhà vô địch bóng đá toàn cầu năm 3000 là ai?"
+    - "Công thức luyến thuốc tiên từ một triệu năm trước là gì?"
+    """
+    import time
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+    
+    start_time = time.time()
+    
+    try:
+        # Initialize LLM directly
+        llm = ChatGoogleGenerativeAI(
+            model=settings.GEMINI_MODEL_NAME,
+            api_key=settings.GEMINI_API_KEY,
+            temperature=0.1,  # Low temperature for consistency
+            convert_system_message_to_human=True
+        )
+        
+        # Pure baseline - minimal prompt without any instructions
+        prompt = ChatPromptTemplate.from_messages([
+            ("human", "{question}"),
+        ])
+        
+        # Create chain
+        chain = prompt | llm | StrOutputParser()
+        
+        # Get response
+        answer = chain.invoke({"question": request.question})
+        
+        end_time = time.time()
+        
+        return BaselineTestResponse(
+            question=request.question,
+            answer=answer,
+            model=settings.GEMINI_MODEL_NAME,
+            temperature=0.1,
+            metadata={
+                "model_type": "baseline_test",
+                "description": "Raw LLM output without RAG context - for hallucination detection",
+                "processing_time": round(end_time - start_time, 3),
+                "note": "Compare this with /chat endpoint results to measure RAG effectiveness"
+            }
+        )
+    
+    except Exception as e:
+        logger.error(f"Baseline test error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Baseline test failed: {str(e)}"
+        )
+
+
 # ============================================================================
 # UPLOAD & INDEXING ENDPOINTS (Asynchronous - Queue-based)
 # ============================================================================
+
 
 @router.post("/upload", response_model=BatchUploadResponse)
 async def upload_files(
@@ -267,34 +337,84 @@ async def get_job_status(
         JobStatusResponse with document status
 
     Statuses:
+    - pending: Document created, waiting to be indexed
     - indexing: Document is being processed
     - completed: Document successfully processed
+    - failed: Document processing failed
     """
     try:
-        # First try: job_id is the document_id
-        document = db.query(Document).filter(Document.id == job_id).first()
-
-        # Second try: job_id is the task_id (search by metadata JSON)
+        logger.info(f"📋 Looking up job status: {job_id}")
+        
+        document = None
+        
+        # Strategy 1: Try direct document_id match (UUID)
+        try:
+            import uuid
+            # Validate UUID format first
+            uuid.UUID(job_id)
+            document = db.query(Document).filter(Document.id == job_id).first()
+            if document:
+                logger.info(f"✅ Found document by direct ID: {job_id}")
+        except (ValueError, Exception) as e:
+            logger.debug(f"Could not query by direct ID (not a valid UUID): {str(e)[:50]}")
+        
+        # Strategy 2: Try task_id in metadata JSON
         if not document:
-            from sqlalchemy import text
-            document = db.query(Document).from_statement(
-                text(f"SELECT * FROM documents WHERE metadata->>'task_id' = :job_id LIMIT 1")
-            ).params(job_id=job_id).first()
-
+            try:
+                from sqlalchemy import text
+                document = db.query(Document).from_statement(
+                    text(f"SELECT * FROM documents WHERE metadata->>'task_id' = :job_id LIMIT 1")
+                ).params(job_id=job_id).first()
+                
+                if document:
+                    logger.info(f"✅ Found document by task_id in metadata: {job_id}")
+            except Exception as e:
+                logger.debug(f"Could not query by task_id: {str(e)[:50]}")
+        
+        # Strategy 3: Search by file_path substring (as fallback)
         if not document:
-            raise HTTPException(status_code=404, detail=f"Document not found: {job_id}")
+            try:
+                document = db.query(Document).filter(
+                    Document.file_path.ilike(f"%{job_id[:20]}%")
+                ).order_by(Document.created_at.desc()).first()
+                
+                if document:
+                    logger.info(f"✅ Found document by file_path pattern: {job_id}")
+            except Exception as e:
+                logger.debug(f"Could not query by file_path: {str(e)[:50]}")
+        
+        if not document:
+            logger.warning(f"❌ Document not found: {job_id}")
+            logger.info(f"   Queried for document_id, task_id, and file_path")
+            
+            # Return 404 with helpful message
+            raise HTTPException(
+                status_code=404,
+                detail=f"Job not found: {job_id}. Make sure the upload completed successfully."
+            )
 
         # Count chunks for this document
-        chunk_count = db.query(ChildChunk).filter(ChildChunk.document_id == job_id).count()
+        # Make sure we're comparing properly by converting to string
+        doc_id_str = str(document.id) if hasattr(document.id, '__str__') else document.id
+        
+        logger.info(f"📊 Querying chunks for document_id: {doc_id_str} (type: {type(document.id).__name__})")
+        chunk_count = db.query(ChildChunk).filter(ChildChunk.document_id == document.id).count()
+        logger.info(f"✅ Chunk query result: {chunk_count} chunks found")
+        
+        logger.info(f"✅ Job status retrieved: {document.status}, doc_id={doc_id_str}, chunks: {chunk_count}")
 
         return JobStatusResponse(
             job_id=job_id,
             status=document.status,
             file_name=document.file_name,
-            document_id=job_id,
+            document_id=str(document.id),
             cloudinary_url=document.file_path,
-            progress={"status": document.status, "current": chunk_count, "total": chunk_count} if document.status == "completed" else {"status": "indexing", "current": 0, "total": chunk_count},
-            error=None,
+            progress={
+                "status": document.status,
+                "current": chunk_count,
+                "total": chunk_count
+            },
+            error=document.meta_data.get('error') if document.meta_data else None,
             timing={},
             message=f"Document status: {document.status}, chunks: {chunk_count}"
         )
@@ -303,7 +423,7 @@ async def get_job_status(
         raise
     except Exception as e:
         error_msg = f"Failed to get document status: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error(f"❌ {error_msg}", exc_info=True)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
