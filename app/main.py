@@ -51,7 +51,11 @@ app.add_middleware(
 app.include_router(router)
 
 # Force regeneration of OpenAPI schema to fix file upload UI
-app.openapi_schema = None
+def reset_openapi_schema():
+    app.openapi_schema = None
+
+# Reset schema before creating custom function
+reset_openapi_schema()
 
 
 def custom_openapi():
@@ -66,30 +70,58 @@ def custom_openapi():
         routes=app.routes,
     )
     
-    # Fix file upload endpoint to show file picker instead of string array
+    # Fix file upload endpoint to show file picker
     try:
-        if "/api/v1/upload" in openapi_schema.get("paths", {}):
-            upload_path = openapi_schema["paths"]["/api/v1/upload"]
-            if "post" in upload_path:
-                post_op = upload_path["post"]
-                if "requestBody" in post_op:
-                    rb = post_op["requestBody"]
-                    if "content" in rb and "multipart/form-data" in rb["content"]:
-                        mfd = rb["content"]["multipart/form-data"]
-                        if "schema" in mfd and "properties" in mfd["schema"]:
-                            props = mfd["schema"]["properties"]
-                            # Override files property to use binary format
-                            props["files"] = {
-                                "items": {
-                                    "format": "binary",
-                                    "type": "string"
-                                },
-                                "type": "array",
-                                "title": "Files",
-                                "description": "Select one or more files to upload (HTML, TXT, PDF, DOCX, etc.)"
+        paths = openapi_schema.get("paths", {})
+        if "/api/v1/upload" in paths:
+            upload_op = paths["/api/v1/upload"].get("post", {})
+            
+            if "requestBody" in upload_op:
+                content = upload_op["requestBody"].get("content", {})
+                
+                if "multipart/form-data" in content:
+                    mfd = content["multipart/form-data"]
+                    schema = mfd.get("schema", {})
+                    properties = schema.get("properties", {})
+                    
+                    # Set files with binary format
+                    properties["files"] = {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "format": "binary"
+                        },
+                        "title": "Files",
+                        "description": "Select one or more files to upload (HTML, TXT, PDF, DOCX, etc.)"
+                    }
+                    
+                    # Add encoding for multipart (helps some Swagger versions render file picker)
+                    if "encoding" not in mfd:
+                        mfd["encoding"] = {
+                            "files": {
+                                "contentType": "application/octet-stream"
                             }
+                        }
+                    
+                    # Ensure source_type is properly defined
+                    if "source_type" not in properties:
+                        properties["source_type"] = {
+                            "type": "string",
+                            "default": "local",
+                            "description": "Source type: local, cloud, or wikipedia",
+                            "enum": ["local", "cloud", "wikipedia"]
+                        }
+                    
+                    # Mark files as required
+                    if "required" not in schema:
+                        schema["required"] = []
+                    if "files" not in schema["required"]:
+                        schema["required"].append("files")
+                    
+                    logger.info("✅ OpenAPI schema customized with encoding for file upload")
+    
     except Exception as e:
-        logger.warning(f"Could not customize OpenAPI schema: {e}")
+        logger.error(f"❌ Could not customize OpenAPI schema: {e}", exc_info=True)
     
     app.openapi_schema = openapi_schema
     return app.openapi_schema
