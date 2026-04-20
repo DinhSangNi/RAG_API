@@ -559,6 +559,13 @@ class DocumentWorker:
             error_msg = f"Upload task failed: {str(e)}"
             logger.error(f"[{task.task_id}] ❌ {error_msg}", exc_info=True)
             
+            # Rollback any uncommitted transaction
+            try:
+                self.db.rollback()
+                logger.info(f"[{task.task_id}] ↩️ Database transaction rolled back")
+            except Exception as rollback_error:
+                logger.error(f"[{task.task_id}] Failed to rollback: {rollback_error}")
+            
             # Update document status to 'failed' if document was created
             if document_id:
                 try:
@@ -572,6 +579,10 @@ class DocumentWorker:
                         logger.info(f"[{task.task_id}]    Error saved: {str(e)[:80]}...")
                 except Exception as db_error:
                     logger.error(f"[{task.task_id}] Failed to update status to failed: {db_error}")
+                    try:
+                        self.db.rollback()
+                    except:
+                        pass
             
             # Clean up
             try:
@@ -585,6 +596,14 @@ class DocumentWorker:
             logger.error("="*70 + "\n")
             
             return TaskResult(task_id=task.task_id, status="failed", error=error_msg)
+        
+        finally:
+            # Reset the session after each task to ensure clean state
+            try:
+                self.db.expunge_all()
+                logger.debug(f"[{task.task_id}] 🔄 Session cleaned up")
+            except Exception as cleanup_error:
+                logger.warning(f"[{task.task_id}] Warning during session cleanup: {cleanup_error}")
     
     def process_edit_task(self, task: EditTask) -> TaskResult:
         """Process document edit task with detailed logging"""
@@ -700,6 +719,13 @@ class DocumentWorker:
             error_msg = f"Edit task failed: {str(e)}"
             logger.error(f"[{task.task_id}] ❌ {error_msg}", exc_info=True)
             
+            # Rollback any uncommitted transaction
+            try:
+                self.db.rollback()
+                logger.info(f"[{task.task_id}] ↩️ Database transaction rolled back")
+            except Exception as rollback_error:
+                logger.error(f"[{task.task_id}] Failed to rollback: {rollback_error}")
+            
             # Update document status to 'failed'
             try:
                 document = self.db.query(Document).filter(Document.id == task.document_id).first()
@@ -712,6 +738,10 @@ class DocumentWorker:
                     logger.info(f"[{task.task_id}]    Error saved: {str(e)[:80]}...")
             except Exception as db_error:
                 logger.error(f"[{task.task_id}] Failed to update status to failed: {db_error}")
+                try:
+                    self.db.rollback()
+                except:
+                    pass
             
             # Clean up
             try:
@@ -725,6 +755,14 @@ class DocumentWorker:
             logger.error("="*70 + "\n")
             
             return TaskResult(task_id=task.task_id, status="failed", error=error_msg)
+        
+        finally:
+            # Reset the session after each task to ensure clean state
+            try:
+                self.db.expunge_all()
+                logger.debug(f"[{task.task_id}] 🔄 Session cleaned up")
+            except Exception as cleanup_error:
+                logger.warning(f"[{task.task_id}] Warning during session cleanup: {cleanup_error}")
     
     def run(self):
         """Main worker loop with detailed logging"""
@@ -777,8 +815,14 @@ class DocumentWorker:
             logger.error("❌ Worker error", exc_info=True)
         finally:
             try:
+                # Ensure any pending transaction is rolled back
+                self.db.rollback()
+            except:
+                pass
+            
+            try:
                 self.db.close()
-                logger.info("✅ Database connection closed")
+                logger.info("✅ Database connection closed at worker shutdown")
             except:
                 pass
 
