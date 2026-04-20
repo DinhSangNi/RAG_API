@@ -5,6 +5,7 @@ RAG Service API with PostgreSQL and pgvector
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from app.api.routes import router
 from app.config import settings
 from app.database.connection import engine, Base
@@ -51,6 +52,50 @@ app.include_router(router)
 
 # Force regeneration of OpenAPI schema to fix file upload UI
 app.openapi_schema = None
+
+
+def custom_openapi():
+    """Customize OpenAPI schema to properly display file upload in Swagger UI"""
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    openapi_schema = get_openapi(
+        title="RAG Service",
+        version="1.0.0",
+        description="RAG Service API với PostgreSQL và pgvector",
+        routes=app.routes,
+    )
+    
+    # Fix file upload endpoint to show file picker instead of string array
+    try:
+        if "/api/v1/upload" in openapi_schema.get("paths", {}):
+            upload_path = openapi_schema["paths"]["/api/v1/upload"]
+            if "post" in upload_path:
+                post_op = upload_path["post"]
+                if "requestBody" in post_op:
+                    rb = post_op["requestBody"]
+                    if "content" in rb and "multipart/form-data" in rb["content"]:
+                        mfd = rb["content"]["multipart/form-data"]
+                        if "schema" in mfd and "properties" in mfd["schema"]:
+                            props = mfd["schema"]["properties"]
+                            # Override files property to use binary format
+                            props["files"] = {
+                                "items": {
+                                    "format": "binary",
+                                    "type": "string"
+                                },
+                                "type": "array",
+                                "title": "Files",
+                                "description": "Select one or more files to upload (HTML, TXT, PDF, DOCX, etc.)"
+                            }
+    except Exception as e:
+        logger.warning(f"Could not customize OpenAPI schema: {e}")
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 @app.on_event("startup")

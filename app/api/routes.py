@@ -4,6 +4,7 @@ Handles document processing, search, and chat endpoints
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from pydantic import Field
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import re
@@ -223,8 +224,8 @@ async def baseline_test(
 
 @router.post("/upload", response_model=BatchUploadResponse)
 async def upload_files(
-    files: List[UploadFile] = File(...),
-    source_type: str = Form(default="local"),
+    files: List[UploadFile] = File(..., description="Select one or more files to upload"),
+    source_type: str = Form(default="local", description="Source type: local, cloud, or wikipedia"),
     db: Session = Depends(get_db)
 ):
     """
