@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     CLOUDINARY_UPLOAD_FOLDER: str = "rag_documents"
     
     # Redis Configuration (for background task queue)
+    REDIS_CONNECTION_STRING: str = ""
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0

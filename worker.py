@@ -297,6 +297,7 @@ class DocumentWorker:
         
         try:
             self.queue_service = RedisQueueService(
+                connection_string=settings.REDIS_CONNECTION_STRING,
                 host=settings.REDIS_HOST,
                 port=settings.REDIS_PORT,
                 db=settings.REDIS_DB
@@ -493,7 +494,13 @@ class DocumentWorker:
             
             # Process content - chunking
             logger.info(f"[{task.task_id}] ✂️ Step 4: Chunking document...")
-            chunks_result = self.chunking_service.chunk_markdown(content, task.file_name)
+            logger.info(f"[{task.task_id}]    Using chunk_size={task.chunk_size}, overlap={task.chunk_overlap}")
+            chunks_result = self.chunking_service.chunk_markdown(
+                content, 
+                task.file_name,
+                chunk_size=task.chunk_size,
+                chunk_overlap=task.chunk_overlap
+            )
             chunks = chunks_result['child_chunks']
             logger.info(f"[{task.task_id}]    Created {len(chunks)} chunks")
             
@@ -652,7 +659,13 @@ class DocumentWorker:
             
             # Chunk new content
             logger.info(f"[{task.task_id}] ✂️ Step 4: Re-chunking document...")
-            chunks_result = self.chunking_service.chunk_markdown(new_content, task.file_name)
+            logger.info(f"[{task.task_id}]    Using chunk_size={task.chunk_size}, overlap={task.chunk_overlap}")
+            chunks_result = self.chunking_service.chunk_markdown(
+                new_content, 
+                task.file_name,
+                chunk_size=task.chunk_size,
+                chunk_overlap=task.chunk_overlap
+            )
             chunks = chunks_result['child_chunks']
             logger.info(f"[{task.task_id}]    Created {len(chunks)} new chunks")
             
@@ -780,7 +793,9 @@ class DocumentWorker:
                 # Check upload queue
                 upload_data = self.queue_service.pop_upload_task()
                 if upload_data:
+                    logger.info(f"📋 Upload task data from queue: {list(upload_data.keys())}")
                     task = UploadTask.from_dict(upload_data)
+                    logger.info(f"✅ Parsed UploadTask: task_id={task.task_id}, file={task.file_name}, chunk_size={task.chunk_size}, overlap={task.chunk_overlap}")
                     logger.info(f"\n📨 Task received from queue: {task.task_id} (upload)")
                     result = self.process_upload_task(task)
                     self.queue_service.set_result(task.task_id, result.to_dict())
@@ -792,7 +807,9 @@ class DocumentWorker:
                 # Check edit queue
                 edit_data = self.queue_service.pop_edit_task()
                 if edit_data:
+                    logger.info(f"📋 Edit task data from queue: {list(edit_data.keys())}")
                     task = EditTask.from_dict(edit_data)
+                    logger.info(f"✅ Parsed EditTask: task_id={task.task_id}, doc_id={task.document_id}, file={task.file_name}, chunk_size={task.chunk_size}, overlap={task.chunk_overlap}")
                     logger.info(f"\n📨 Task received from queue: {task.task_id} (edit)")
                     result = self.process_edit_task(task)
                     self.queue_service.set_result(task.task_id, result.to_dict())

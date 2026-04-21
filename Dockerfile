@@ -2,14 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies including Redis
+# Install system dependencies
 # Use --no-install-recommends to reduce image size
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     python3-dev \
     postgresql-client \
-    redis-server \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Copy only requirements first (for better cache layering)
@@ -35,8 +34,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Expose ports
 # 8000: FastAPI
-# 6379: Redis
-EXPOSE 8000 6379
+EXPOSE 8000
 
 # Use shell script to start all services
 ENTRYPOINT ["/app/entrypoint.sh"]

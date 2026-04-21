@@ -32,8 +32,11 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="RAG Service API với PostgreSQL và pgvector"
+    description="RAG Service API với PostgreSQL và pgvector",
 )
+
+# Force OpenAPI 3.0.x for better Swagger UI compatibility with file arrays.
+app.openapi_version = "3.0.3"
 
 # Attach container to app for access via request.app.container if needed
 app.container = container  # type: ignore[attr-defined]
@@ -50,80 +53,40 @@ app.add_middleware(
 # Include API routes
 app.include_router(router)
 
-# Force regeneration of OpenAPI schema to fix file upload UI
-def reset_openapi_schema():
-    app.openapi_schema = None
-
-# Reset schema before creating custom function
-reset_openapi_schema()
-
 
 def custom_openapi():
-    """Customize OpenAPI schema to properly display file upload in Swagger UI"""
+    """Patch schema so Swagger UI renders file picker inputs reliably."""
     if app.openapi_schema:
         return app.openapi_schema
-    
-    openapi_schema = get_openapi(
-        title="RAG Service",
-        version="1.0.0",
-        description="RAG Service API với PostgreSQL và pgvector",
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
         routes=app.routes,
+        openapi_version=app.openapi_version,
     )
-    
-    # Fix file upload endpoint to show file picker
-    try:
-        paths = openapi_schema.get("paths", {})
-        if "/api/v1/upload" in paths:
-            upload_op = paths["/api/v1/upload"].get("post", {})
-            
-            if "requestBody" in upload_op:
-                content = upload_op["requestBody"].get("content", {})
-                
-                if "multipart/form-data" in content:
-                    mfd = content["multipart/form-data"]
-                    schema = mfd.get("schema", {})
-                    properties = schema.get("properties", {})
-                    
-                    # Set files with binary format
-                    properties["files"] = {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "format": "binary"
-                        },
-                        "title": "Files",
-                        "description": "Select one or more files to upload (HTML, TXT, PDF, DOCX, etc.)"
-                    }
-                    
-                    # Add encoding for multipart (helps some Swagger versions render file picker)
-                    if "encoding" not in mfd:
-                        mfd["encoding"] = {
-                            "files": {
-                                "contentType": "application/octet-stream"
-                            }
-                        }
-                    
-                    # Ensure source_type is properly defined
-                    if "source_type" not in properties:
-                        properties["source_type"] = {
-                            "type": "string",
-                            "default": "local",
-                            "description": "Source type: local, cloud, or wikipedia",
-                            "enum": ["local", "cloud", "wikipedia"]
-                        }
-                    
-                    # Mark files as required
-                    if "required" not in schema:
-                        schema["required"] = []
-                    if "files" not in schema["required"]:
-                        schema["required"].append("files")
-                    
-                    logger.info("✅ OpenAPI schema customized with encoding for file upload")
-    
-    except Exception as e:
-        logger.error(f"❌ Could not customize OpenAPI schema: {e}", exc_info=True)
-    
-    app.openapi_schema = openapi_schema
+
+    components = schema.get("components", {}).get("schemas", {})
+
+    # Multi-file upload body
+    upload_key = "Body_upload_files_api_v1_upload_post"
+    upload_body = components.get(upload_key, {})
+    upload_files = upload_body.get("properties", {}).get("files", {})
+    upload_items = upload_files.get("items", {})
+    if upload_items.get("contentMediaType"):
+        upload_items.pop("contentMediaType", None)
+        upload_items["format"] = "binary"
+
+    # Single-file edit body
+    edit_key = "Body_edit_document_api_v1_documents__document_id__edit_put"
+    edit_body = components.get(edit_key, {})
+    edit_file = edit_body.get("properties", {}).get("file", {})
+    if edit_file.get("contentMediaType"):
+        edit_file.pop("contentMediaType", None)
+        edit_file["format"] = "binary"
+
+    app.openapi_schema = schema
     return app.openapi_schema
 
 
@@ -151,7 +114,10 @@ async def _startup():
         # Test connection by pinging
         ping_result = queue_service.redis_client.ping()
         if ping_result:
-            logger.info(f"  ✅ Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT} (db={settings.REDIS_DB})")
+            if settings.REDIS_CONNECTION_STRING:
+                logger.info("  ✅ Redis connected via REDIS_CONNECTION_STRING")
+            else:
+                logger.info(f"  ✅ Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT} (db={settings.REDIS_DB})")
             # Get Redis info
             try:
                 info = queue_service.redis_client.info()
@@ -162,7 +128,10 @@ async def _startup():
             logger.error("  ❌ Redis PING failed")
     except Exception as e:
         logger.error(f"  ❌ Redis connection failed: {str(e)}")
-        logger.error(f"     Make sure Redis is running at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+        if settings.REDIS_CONNECTION_STRING:
+            logger.error("     Make sure REDIS_CONNECTION_STRING is reachable")
+        else:
+            logger.error(f"     Make sure Redis is running at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
     
     # Warm up stopwords
     logger.info("\n🔥 Warming up services...")

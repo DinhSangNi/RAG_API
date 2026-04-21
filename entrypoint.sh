@@ -9,37 +9,15 @@ echo "=================================================="
 mkdir -p /app/data/temp_uploads
 
 # ========================================
-# 1. Start Redis with memory limit
+# 1. Redis is external - configured via REDIS_CONNECTION_STRING
 # ========================================
 echo ""
-echo "📦 Starting Redis Server..."
-# Note: Memory overcommit warning can be suppressed in production
-# For Azure Container Instances, this warning is expected and safe to ignore
-redis-server --port 6379 \
-    --maxmemory 256mb \
-    --maxmemory-policy allkeys-lru \
-    --save 900 1 \
-    --logfile /proc/self/fd/1 \
-    --daemonize no \
-    --stop-writes-on-bgsave-error no \
-    &
-REDIS_PID=$!
-echo "✅ Redis started (PID: $REDIS_PID)"
-
-# Wait for Redis to be ready
-sleep 2
-echo "⏳ Waiting for Redis to be ready..."
-for i in {1..30}; do
-    if redis-cli ping > /dev/null 2>&1; then
-        echo "✅ Redis is ready!"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo "❌ Redis failed to start"
-        exit 1
-    fi
-    sleep 1
-done
+echo "🌐 Using external Redis from environment"
+if [ -z "$REDIS_CONNECTION_STRING" ]; then
+    echo "⚠️  REDIS_CONNECTION_STRING is not set - using REDIS_HOST:REDIS_PORT fallback"
+else
+    echo "✅ REDIS_CONNECTION_STRING is configured"
+fi
 
 # ========================================
 # 2. Start Worker in background

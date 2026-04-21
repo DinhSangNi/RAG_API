@@ -42,13 +42,15 @@ class ChunkingService:
             separators=["\n\n", "\n", ". ", " ", ""]
         )
 
-    def chunk_markdown(self, text: str, source_file: str = "") -> Dict[str, Any]:
+    def chunk_markdown(self, text: str, source_file: str = "", chunk_size: int = None, chunk_overlap: int = None) -> Dict[str, Any]:
         """
         Chunk a markdown document with hierarchical structure
 
         Args:
             text: Markdown text content
             source_file: Source file path for metadata
+            chunk_size: Override chunk_size for this chunking (optional)
+            chunk_overlap: Override chunk_overlap for this chunking (optional)
 
         Returns:
             Dictionary with:
@@ -57,6 +59,20 @@ class ChunkingService:
                 'child_chunks': List[Dict] - All chunks (with parent_id if belongs to parent)
             }
         """
+        # Use provided sizes or fall back to instance defaults
+        _chunk_size = chunk_size if chunk_size is not None else self.chunk_size
+        _chunk_overlap = chunk_overlap if chunk_overlap is not None else self.chunk_overlap
+        
+        # Create a temporary splitter with the right parameters (if different from defaults)
+        if _chunk_size != self.chunk_size or _chunk_overlap != self.chunk_overlap:
+            temp_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=_chunk_size,
+                chunk_overlap=_chunk_overlap,
+                separators=["\n\n", "\n", ". ", " ", ""]
+            )
+        else:
+            temp_splitter = self.recursive_splitter
+        
         # Step 1: Split by headers
         section_docs = self.section_splitter.split_text(text)
 
@@ -74,7 +90,7 @@ class ChunkingService:
             }
 
             # If section is too large, split further
-            if len(section_doc.page_content) > self.chunk_size:
+            if len(section_doc.page_content) > _chunk_size:
                 # Save parent chunk (original section)
                 parent_chunk = {
                     'content': section_doc.page_content,
@@ -88,7 +104,7 @@ class ChunkingService:
                 parent_chunks.append(parent_chunk)
 
                 # Split section into sub-chunks
-                sub_chunks = self.recursive_splitter.split_documents([section_doc])
+                sub_chunks = temp_splitter.split_documents([section_doc])
 
                 for sub_idx, sub_chunk in enumerate(sub_chunks):
                     child_chunks.append({

@@ -1,11 +1,8 @@
 version: "3.8"
 
 services:
-  # All-in-One RAG Service: API + Redis + Worker
-  # Single container with:
-  # - FastAPI on port 8000
-  # - Redis on port 6379 (with 256MB memory limit)
-  # - Background Worker for document processing
+  # All-in-One RAG Service: API + Worker
+  # Redis can be supplied externally via REDIS_CONNECTION_STRING.
   rag:
     build: .
     container_name: rag_api_complete
@@ -18,12 +15,12 @@ services:
       CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME}
       CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY}
       CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET}
+      REDIS_CONNECTION_STRING: ${REDIS_CONNECTION_STRING:-}
       REDIS_HOST: localhost
       REDIS_PORT: 6379
       REDIS_DB: 0
     ports:
       - "8000:8000"
-      - "6379:6379"
     volumes:
       # Shared storage for temp files
       - ./data:/app/data
@@ -40,4 +37,3 @@ services:
 networks:
   rag_network:
     driver: bridge
-
