@@ -14,7 +14,7 @@ mkdir -p /app/data/temp_uploads
 echo ""
 echo "🌐 Using external Redis from environment"
 if [ -z "$REDIS_CONNECTION_STRING" ]; then
-    echo "⚠️  REDIS_CONNECTION_STRING is not set - using REDIS_HOST:REDIS_PORT fallback"
+    echo "⚠️  REDIS_CONNECTION_STRING is not set"
 else
     echo "✅ REDIS_CONNECTION_STRING is configured"
 fi

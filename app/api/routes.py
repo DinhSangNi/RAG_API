@@ -3,7 +3,7 @@ API Routes for RAG Service
 Handles document processing, search, and chat endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
 from pydantic import Field
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -11,6 +11,7 @@ import re
 import os
 import uuid
 import hashlib
+import json
 from datetime import datetime
 
 from app.database import get_db
@@ -28,7 +29,7 @@ from app.api.schemas import (
     EditDocumentRequest,
     EditDocumentResponse,
 )
-from app.dependencies import get_search_service, get_rag_service
+from app.dependencies import get_search_service, get_rag_service, require_admin_api_key
 from app.queue.service import RedisQueueService, get_queue_service
 from app.queue.models import UploadTask, EditTask
 from app.services.rag_service import RAGService
@@ -36,6 +37,49 @@ import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["documents"])
+
+
+def _normalize_pipeline_status(value: Optional[str]) -> str:
+    if not value:
+        return "not_found"
+    normalized = str(value).strip().lower()
+    if normalized in {"queued", "pending"}:
+        return "pending"
+    if normalized in {"processing", "indexing", "updating"}:
+        return "processing"
+    if normalized in {"completed", "complete", "done"}:
+        return "completed"
+    if normalized in {"failed", "error"}:
+        return "failed"
+    return normalized
+
+
+def _compose_document_status(rag_status: str, graph_status: str) -> str:
+    rag = _normalize_pipeline_status(rag_status)
+    graph = _normalize_pipeline_status(graph_status)
+    if rag == "failed" or graph == "failed":
+        return "failed"
+    if rag == "completed" and graph == "completed":
+        return "completed"
+    if rag == "completed":
+        return "rag_completed_waiting_graph"
+    if rag in {"pending", "processing"}:
+        return "indexing"
+    return rag
+
+
+def _read_graph_status(task_id: str) -> str:
+    if not task_id:
+        return "not_found"
+    queue_service = get_queue_service()
+    raw = queue_service.redis_client.get(f"graphrag:task:status:{task_id}")
+    if not raw:
+        return "not_found"
+    try:
+        payload = json.loads(raw)
+        return _normalize_pipeline_status(payload.get("status"))
+    except Exception:
+        return _normalize_pipeline_status(raw)
 
 
 @router.get("/documents", response_model=List[DocumentResponse])
@@ -98,6 +142,7 @@ async def get_document(
 @router.delete("/documents/{document_id}")
 async def delete_document(
     document_id: str,
+    hard_delete: bool = Query(default=False, description="Require true to permanently delete document and chunks"),
     db: Session = Depends(get_db)
 ):
     """
@@ -108,10 +153,27 @@ async def delete_document(
     if not document:
         raise HTTPException(status_code=404, detail=f"Document không tồn tại: {document_id}")
     
-    db.delete(document)
+    if hard_delete:
+        allow_hard_delete = os.getenv("RAG_ALLOW_HARD_DELETE", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_hard_delete:
+            raise HTTPException(
+                status_code=409,
+                detail="Hard delete is disabled by server policy (RAG_ALLOW_HARD_DELETE=false).",
+            )
+
+        db.delete(document)
+        db.commit()
+        return {"message": f"Document {document_id} đã được hard-delete"}
+
+    # Safe default: keep document row for auditability and avoid accidental data loss.
+    metadata = dict(document.meta_data or {})
+    metadata["soft_deleted"] = True
+    metadata["deleted_at"] = datetime.now().astimezone().isoformat()
+    document.meta_data = metadata
+    document.status = "deleted"
     db.commit()
-    
-    return {"message": f"Document {document_id} đã được xóa"}
+
+    return {"message": f"Document {document_id} đã được soft-delete"}
 
 
 # ============================================================================
@@ -232,7 +294,7 @@ async def upload_files(
     Upload files to queue for background processing
     
     Files are saved temporarily and pushed to Redis queue.
-    Worker will process them: upload to Cloudinary, chunk, embed, and index.
+    Worker will process them: parse/chunk, embed, and index.
 
     Args:
         files: List of files to upload
@@ -294,7 +356,7 @@ async def upload_files(
             logger.info(f"  🔄 Pushing to Redis queue...")
             queue_service.push_upload_task(task.to_dict())
             logger.info(f"  ✅ Task pushed to Redis: {task_id}")
-            logger.info(f"     Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT} db={settings.REDIS_DB}")
+            logger.info("     Redis queue push completed")
             
             job_response = UploadJobResponse(
                 job_id=task_id,
@@ -345,6 +407,38 @@ async def get_job_status(
     """
     try:
         logger.info(f"📋 Looking up job status: {job_id}")
+
+        queue_service = get_queue_service()
+        redis_status = queue_service.get_task_status(job_id)
+        graph_status = _read_graph_status(job_id)
+        if redis_status:
+            redis_state = str(redis_status.get("status", "")).lower()
+            progress = redis_status.get("progress") or {}
+            redis_document_id = redis_status.get("document_id")
+            combined_status = _compose_document_status(redis_state, graph_status)
+
+            # Return live queue state quickly for frontend polling.
+            if combined_status in {"indexing", "failed"}:
+                return JobStatusResponse(
+                    job_id=job_id,
+                    status="failed" if combined_status == "failed" else "processing",
+                    file_name=redis_status.get("file_name"),
+                    document_id=redis_document_id,
+                    progress=progress,
+                    error=redis_status.get("error"),
+                    timing={},
+                    message=(
+                        redis_status.get("message")
+                        if combined_status == "failed"
+                        else "RAG completed, waiting for Graph pipeline"
+                        if _normalize_pipeline_status(redis_state) == "completed"
+                        else redis_status.get("message")
+                    ),
+                )
+
+            # If completed in Redis and document id is available, use it for DB lookup.
+            if _normalize_pipeline_status(redis_state) == "completed" and redis_document_id:
+                job_id = str(redis_document_id)
         
         document = None
         
@@ -385,6 +479,20 @@ async def get_job_status(
                 logger.debug(f"Could not query by file_path: {str(e)[:50]}")
         
         if not document:
+            if redis_status and _compose_document_status(str(redis_status.get("status", "")).lower(), graph_status) == "completed":
+                fallback_document_id = str(redis_status.get("document_id") or job_id)
+                return JobStatusResponse(
+                    job_id=job_id,
+                    status="completed",
+                    file_name=redis_status.get("file_name"),
+                    document_id=fallback_document_id,
+                    file_url=redis_status.get("file_path"),
+                    progress=redis_status.get("progress") or {"current": 1, "total": 1, "percent": 100},
+                    error=redis_status.get("error"),
+                    timing={},
+                    message=redis_status.get("message") or "Document processing completed",
+                )
+
             logger.warning(f"❌ Document not found: {job_id}")
             logger.info(f"   Queried for document_id, task_id, and file_path")
             
@@ -401,23 +509,46 @@ async def get_job_status(
         logger.info(f"📊 Querying chunks for document_id: {doc_id_str} (type: {type(document.id).__name__})")
         chunk_count = db.query(ChildChunk).filter(ChildChunk.document_id == document.id).count()
         logger.info(f"✅ Chunk query result: {chunk_count} chunks found")
+
+        metadata = dict(document.meta_data or {})
+        pipeline_status = dict(metadata.get("pipeline_status") or {})
+        metadata_task_id = str(metadata.get("task_id") or "")
+        rag_state = _normalize_pipeline_status(redis_status.get("status") if redis_status else document.status)
+        graph_state = _read_graph_status(metadata_task_id or job_id)
+        composed_status = _compose_document_status(rag_state, graph_state)
+
+        pipeline_status.update(
+            {
+                "rag": rag_state,
+                "graph": graph_state,
+                "updated_at": datetime.now().astimezone().isoformat(),
+            }
+        )
+        metadata["pipeline_status"] = pipeline_status
+        if metadata_task_id:
+            metadata["task_id"] = metadata_task_id
+
+        if document.status != composed_status or document.meta_data != metadata:
+            document.status = composed_status
+            document.meta_data = metadata
+            db.commit()
         
-        logger.info(f"✅ Job status retrieved: {document.status}, doc_id={doc_id_str}, chunks: {chunk_count}")
+        logger.info(f"✅ Job status retrieved: {composed_status}, doc_id={doc_id_str}, chunks: {chunk_count}")
 
         return JobStatusResponse(
             job_id=job_id,
-            status=document.status,
+            status=composed_status,
             file_name=document.file_name,
             document_id=str(document.id),
-            cloudinary_url=document.file_path,
+            file_url=document.file_path,
             progress={
-                "status": document.status,
+                "status": composed_status,
                 "current": chunk_count,
                 "total": chunk_count
             },
             error=document.meta_data.get('error') if document.meta_data else None,
             timing={},
-            message=f"Document status: {document.status}, chunks: {chunk_count}"
+            message=f"Document status: {composed_status}, chunks: {chunk_count}"
         )
 
     except HTTPException:
@@ -440,10 +571,32 @@ async def get_job_status_simple(
         {'status': 'indexing' | 'completed', 'job_id': document_id}
     """
     try:
+        queue_service = get_queue_service()
+        redis_status = queue_service.get_task_status(job_id)
+        graph_status = _read_graph_status(job_id)
+        if redis_status:
+            redis_state = str(redis_status.get("status", "")).lower()
+            combined_status = _compose_document_status(redis_state, graph_status)
+            if combined_status in {"indexing", "failed", "rag_completed_waiting_graph"}:
+                return {
+                    'job_id': job_id,
+                    'status': 'failed' if combined_status == 'failed' else 'processing',
+                    'is_finished': combined_status == 'completed',
+                    'is_failed': combined_status == 'failed'
+                }
+
         # job_id is actually the document_id
         document = db.query(Document).filter(Document.id == job_id).first()
 
         if not document:
+            if redis_status and str(redis_status.get("status", "")).lower() == "completed":
+                return {
+                    'job_id': job_id,
+                    'status': 'completed',
+                    'is_finished': True,
+                    'is_failed': False
+                }
+
             raise HTTPException(status_code=404, detail=f"Document not found: {job_id}")
 
         return {
@@ -459,6 +612,46 @@ async def get_job_status_simple(
         error_msg = f"Failed to get document status: {str(e)}"
         print(f"❌ {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.post("/jobs/requeue-stuck")
+async def requeue_stuck_jobs(
+    _: None = Depends(require_admin_api_key),
+    timeout_minutes: int = Query(default=30, ge=1, le=1440, description="Requeue only tasks stuck longer than this timeout"),
+    max_tasks: int = Query(default=100, ge=1, le=10000, description="Maximum stuck tasks to process in one call"),
+):
+    """
+    Admin-only endpoint to recover stale tasks from processing queue.
+
+    Safety rules:
+    - Idempotent: already-recovered tasks are skipped on subsequent calls.
+    - Timeout-aware: only tasks stale longer than timeout_minutes are considered.
+    - Poison-pill aware: tasks exceeding retry limit are sent to dead-letter queue.
+    """
+    try:
+        queue_service = get_queue_service()
+        timeout_seconds = timeout_minutes * 60
+        recovery = queue_service.requeue_processing_tasks(
+            max_tasks=max_tasks,
+            stuck_after_seconds=timeout_seconds,
+            max_retries=settings.WORKER_MAX_RETRIES,
+        )
+
+        return {
+            "status": "ok",
+            "timeout_minutes": timeout_minutes,
+            "max_tasks": max_tasks,
+            "max_retries": settings.WORKER_MAX_RETRIES,
+            "recovery": recovery,
+            "message": (
+                f"Recovered {recovery['requeued']} task(s), "
+                f"dead-lettered {recovery['dead_lettered']} task(s), "
+                f"skipped {recovery['skipped']} task(s)"
+            ),
+        }
+    except Exception as e:
+        logger.error(f"❌ Failed to requeue stuck tasks: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to requeue stuck tasks: {str(e)}")
 
 
 @router.put("/documents/{document_id}/edit", response_model=EditDocumentResponse)

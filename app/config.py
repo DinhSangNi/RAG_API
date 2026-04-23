@@ -45,18 +45,17 @@ class Settings(BaseSettings):
     # Raw File Storage - where uploaded files are saved before processing
     # Hard-coded to /app/data for Docker containers
     TEMP_UPLOAD_DIR: str = "/app/data/temp_uploads"
-
-    # Cloudinary Configuration (Load from .env)
-    CLOUDINARY_CLOUD_NAME: str = ""
-    CLOUDINARY_API_KEY: str = ""
-    CLOUDINARY_API_SECRET: str = ""
-    CLOUDINARY_UPLOAD_FOLDER: str = "rag_documents"
     
     # Redis Configuration (for background task queue)
     REDIS_CONNECTION_STRING: str = ""
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
+
+    # Admin/SRE controls for queue recovery
+    ADMIN_API_KEY: str = ""
+    WORKER_MAX_RETRIES: int = 3
+    WORKER_STUCK_TIMEOUT_SECONDS: int = 1800
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

@@ -27,9 +27,6 @@ dependency-injector
 # Vietnamese NLP
 underthesea
 
-# Cloud Storage
-cloudinary
-
 # File Processing & HTML
 beautifulsoup4
 markitdown

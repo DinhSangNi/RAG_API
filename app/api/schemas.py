@@ -90,7 +90,7 @@ class JobStatusResponse(BaseModel):
     status: str  # queued, processing, completed, failed
     file_name: Optional[str] = None
     document_id: Optional[str] = None
-    cloudinary_url: Optional[str] = None
+    file_url: Optional[str] = None
     progress: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     timing: Optional[Dict[str, Any]] = None
@@ -103,7 +103,7 @@ class JobStatusResponse(BaseModel):
                 "status": "completed",
                 "file_name": "document.pdf",
                 "document_id": "doc-123",
-                "cloudinary_url": "https://res.cloudinary.com/...",
+                "file_url": "https://example.com/path/to/document",
                 "progress": {"step": "completed", "current": 100, "total": 100},
                 "message": "Document processed successfully"
             }

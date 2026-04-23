@@ -13,12 +13,13 @@ Dependency graph:
       └──────────────────────────────────────────────────────►─┘
 """
 
-from fastapi import Depends
+from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 from dependency_injector.wiring import inject, Provide
 
 from app.database import get_db
 from app.containers import Container
+from app.config import settings
 from app.services.embedding_service import EmbeddingService
 from app.services.segmentation_service import VietnameseSegmentationService
 from app.services.search_service import SearchService
@@ -45,3 +46,19 @@ def get_rag_service(
 ) -> RAGService:
     """Request-scoped RAGService; reuses the SearchService already built for this request."""
     return RAGService(db, search_service=search_service)
+
+
+def require_admin_api_key(x_admin_api_key: str = Header(default="", alias="X-Admin-Api-Key")) -> None:
+    """Protect sensitive operational endpoints with a static admin API key."""
+    configured_key = settings.ADMIN_API_KEY.strip()
+    if not configured_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin endpoint is disabled because ADMIN_API_KEY is not configured",
+        )
+
+    if x_admin_api_key != configured_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: invalid admin API key",
+        )
