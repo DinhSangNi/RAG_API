@@ -1233,7 +1233,7 @@ class DocumentWorker:
                 should_ack = True
                 task_owner = str(task_data.get("type") or "").lower()
 
-                if task_owner not in {"rag", ""}:
+                if task_owner not in {"rag", "graph", ""}:
                     released = self.queue_service.release_unhandled_task(raw_payload)
                     should_ack = False
                     logger.info(
