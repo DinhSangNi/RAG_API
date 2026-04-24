@@ -462,9 +462,20 @@ class DocumentWorker:
             task_type=task_type,
         )
 
+    def _record_result_to_redis(self, task_id, result_payload):
+        result_key = f"{self.queue_service.result_prefix}{task_id}"
+        self.queue_service.set_result(task_id, result_payload)
+        logger.info("[RAG_REDIS_RESULT_WRITTEN] task_id=%s key=%s", task_id, result_key)
+
+    def _record_status_to_redis(self, task_id, status, **kwargs):
+        status_key = f"{self.queue_service.status_prefix}{task_id}"
+        self.queue_service.set_task_status(task_id=task_id, status=status, **kwargs)
+        logger.info("[RAG_REDIS_STATUS_WRITTEN] task_id=%s status=%s key=%s", task_id, status, status_key)
+
     def _notify_pipeline_webhook(self, *, task_id, document_id, file_name, status, message="", error=None):
         if not self.pipeline_webhook_url:
-            return
+            logger.warning("[RAG_WEBHOOK_SKIPPED] task_id=%s reason=PIPELINE_WEBHOOK_URL not configured", task_id)
+            return False
 
         payload = {
             "documentId": document_id,
@@ -480,6 +491,7 @@ class DocumentWorker:
             headers["X-Webhook-Token"] = self.pipeline_webhook_token
 
         try:
+            logger.info("[RAG_WEBHOOK_CALLING] task_id=%s url=%s status=%s", task_id, self.pipeline_webhook_url, status)
             response = requests.post(
                 self.pipeline_webhook_url,
                 json=payload,
@@ -488,15 +500,18 @@ class DocumentWorker:
             )
             if response.status_code >= 400:
                 logger.warning(
-                    "Pipeline webhook returned %s for task=%s body=%s",
-                    response.status_code,
+                    "[RAG_WEBHOOK_FAILED] task_id=%s http_status=%s body=%s",
                     task_id,
+                    response.status_code,
                     response.text[:300],
                 )
+                return False
             else:
-                logger.info("Pipeline webhook sent successfully for task=%s pipeline=rag", task_id)
+                logger.info("[RAG_WEBHOOK_SUCCESS] task_id=%s http_status=%s", task_id, response.status_code)
+                return True
         except Exception as exc:
-            logger.warning("Pipeline webhook failed for task=%s pipeline=rag: %s", task_id, str(exc))
+            logger.warning("[RAG_WEBHOOK_FAILED] task_id=%s error=%s", task_id, str(exc))
+            return False
 
     @staticmethod
     def _normalize_pipeline_status(value):
@@ -1231,9 +1246,11 @@ class DocumentWorker:
                 raw_payload = claimed["raw_payload"]
                 task_data = self._normalize_payload(task_data)
                 should_ack = True
-                task_owner = str(task_data.get("type") or "").lower()
+                task_owner = self.queue_service._normalize_pipeline_type(
+                    task_data.get("type") or task_data.get("pipeline")
+                )
 
-                if task_owner not in {"rag", "graph", ""}:
+                if task_owner not in {"rag", None}:
                     released = self.queue_service.release_unhandled_task(raw_payload)
                     should_ack = False
                     logger.info(
@@ -1279,7 +1296,7 @@ class DocumentWorker:
                         continue
 
                     logger.info(f"\n📨 Task received from queue: {task_id} ({task_type})")
-                    self.queue_service.set_task_status(
+                    self._record_status_to_redis(
                         task_id=task_id,
                         status=TASK_STATUS_PROCESSING,
                         message="Worker picked up task",
@@ -1300,25 +1317,26 @@ class DocumentWorker:
                         task = EditTask.from_dict(self._build_edit_task_data(task_data))
                         result = self.process_edit_task(task)
 
-                    self.queue_service.set_result(task_id, result.to_dict())
+                    self._record_result_to_redis(task_id, result.to_dict())
 
                     if result.status == "completed":
-                        self.queue_service.set_task_status(
+                        self._record_status_to_redis(
                             task_id=task_id,
                             status=TASK_STATUS_COMPLETED,
                             message=result.message or "Task completed",
                             document_id=result.document_id,
                             progress={"current": 1, "total": 1, "percent": 100},
                         )
-                        self._notify_pipeline_webhook(
+                        webhook_ok = self._notify_pipeline_webhook(
                             task_id=task_id,
                             document_id=result.document_id,
                             file_name=task_data.get("file_name"),
                             status="completed",
                             message=result.message or "Task completed",
                         )
+                        logger.info("[RAG_JOB_FINISHED] task_id=%s redis_status=COMPLETED webhook_ok=%s", task_id, webhook_ok)
                     else:
-                        self.queue_service.set_task_status(
+                        self._record_status_to_redis(
                             task_id=task_id,
                             status=TASK_STATUS_FAILED,
                             message="Task failed",
@@ -1330,7 +1348,7 @@ class DocumentWorker:
                             reason=result.error or "Task failed",
                             error=result.error,
                         )
-                        self._notify_pipeline_webhook(
+                        webhook_ok = self._notify_pipeline_webhook(
                             task_id=task_id,
                             document_id=result.document_id,
                             file_name=task_data.get("file_name"),
@@ -1338,6 +1356,7 @@ class DocumentWorker:
                             message="Task failed",
                             error=result.error,
                         )
+                        logger.info("[RAG_JOB_FINISHED] task_id=%s redis_status=FAILED webhook_ok=%s", task_id, webhook_ok)
 
                     task_count += 1
                     logger.info(f"✅ Result stored in Redis for task {task_id}\n")
@@ -1349,7 +1368,7 @@ class DocumentWorker:
                 except Exception as task_error:
                     logger.error(f"❌ Task processing crashed: {task_error}", exc_info=True)
                     if task_id:
-                        self.queue_service.set_task_status(
+                        self._record_status_to_redis(
                             task_id=task_id,
                             status=TASK_STATUS_FAILED,
                             message="Worker crashed while processing task",
@@ -1361,7 +1380,7 @@ class DocumentWorker:
                             reason="Worker crashed while processing task",
                             error=str(task_error),
                         )
-                        self._notify_pipeline_webhook(
+                        webhook_ok = self._notify_pipeline_webhook(
                             task_id=task_id,
                             document_id=task_data.get("document_id"),
                             file_name=task_data.get("file_name"),
@@ -1369,6 +1388,7 @@ class DocumentWorker:
                             message="Worker crashed while processing task",
                             error=str(task_error),
                         )
+                        logger.info("[RAG_JOB_FINISHED] task_id=%s redis_status=FAILED webhook_ok=%s", task_id, webhook_ok)
                 finally:
                     self._close_db_session()
                     if raw_payload and should_ack:
