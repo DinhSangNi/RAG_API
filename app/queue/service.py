@@ -92,11 +92,11 @@ class RedisQueueService:
             port=port,
             db=db,
         )
-        self.main_queue = os.getenv("REDIS_TASK_QUEUE", "document:task:queue")
+        self.main_queue = os.getenv("REDIS_TASK_QUEUE", "document:task:queue:rag")
         self.upload_queue = self.main_queue
         self.edit_queue = self.main_queue  # Uses same queue; type determined by JSON
-        self.processing_queue = os.getenv("REDIS_PROCESSING_QUEUE", "document:processing:queue")
-        self.failed_queue = os.getenv("REDIS_FAILED_QUEUE", "document:failed:queue")
+        self.processing_queue = os.getenv("REDIS_PROCESSING_QUEUE", "document:processing:queue:rag")
+        self.failed_queue = os.getenv("REDIS_FAILED_QUEUE", "document:failed:queue:rag")
         self.dead_letter_queue = os.getenv("REDIS_DEAD_LETTER_QUEUE", "document:dead-letter:queue")
         self.result_prefix = os.getenv("WORKER_RESULT_PREFIX", "rag:result:")
         self.status_prefix = os.getenv("WORKER_STATUS_PREFIX", "rag:task:status:")
@@ -264,26 +264,43 @@ class RedisQueueService:
         """
         Atomically move one task from main queue to processing queue.
 
-        Uses BRPOPLPUSH so if the worker crashes mid-processing, the task
+        Uses BLMOVE LEFT->RIGHT so queue consumption is FIFO while preserving
+        atomic handoff to processing queue.
+
+        If Redis does not support BLMOVE, falls back to BRPOPLPUSH.
+        In that fallback mode the queue behaves like LIFO.
+
+        Regardless of command, if the worker crashes mid-processing, the task
         remains in processing_queue for later recovery.
         """
-        raw_payload = self.redis_client.brpoplpush(
-            self.main_queue,
-            self.processing_queue,
-            timeout=timeout,
-        )
+        try:
+            raw_payload = self.redis_client.execute_command(
+                "BLMOVE",
+                self.main_queue,
+                self.processing_queue,
+                "LEFT",
+                "RIGHT",
+                timeout,
+            )
+        except Exception:
+            raw_payload = self.redis_client.brpoplpush(
+                self.main_queue,
+                self.processing_queue,
+                timeout=timeout,
+            )
         if not raw_payload:
             return None
 
         self._restore_queue_sentinel_if_empty(self.main_queue)
 
         # Detect sentinel value used to keep the queue key visible in Redis when
-        # the queue is otherwise empty. Put it back at the head and return None.
+        # the queue is otherwise empty. Put it on the RIGHT so LEFT-pop workers
+        # do not claim the sentinel ahead of real tasks.
         try:
             maybe_sentinel = json.loads(raw_payload)
             if maybe_sentinel.get("sentinel") is True or maybe_sentinel.get("type") == "sentinel":
                 self.redis_client.lrem(self.processing_queue, 1, raw_payload)
-                self.redis_client.lpush(self.main_queue, raw_payload)
+                self.redis_client.rpush(self.main_queue, raw_payload)
                 self._restore_queue_sentinel_if_empty(self.processing_queue)
                 return None
         except Exception:
@@ -312,17 +329,10 @@ class RedisQueueService:
             return 0
 
         self._restore_queue_sentinel_if_empty(self.processing_queue)
-
-        try:
-            payload = json.loads(raw_payload)
-            if isinstance(payload, dict):
-                self._push_queue_item(self.main_queue, payload)
-                return removed
-        except Exception:
-            pass
-
+        # Push released tasks to the opposite end so this worker does not
+        # immediately reclaim the same non-owner payload on the next LEFT-pop.
         self._remove_queue_sentinel(self.main_queue)
-        self.redis_client.lpush(self.main_queue, raw_payload)
+        self.redis_client.rpush(self.main_queue, raw_payload)
         return removed
     
     def pop_upload_task(self) -> Optional[Dict[str, Any]]:
