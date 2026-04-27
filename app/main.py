@@ -106,8 +106,23 @@ async def _startup():
     logger.info("\n📁 Storage directories:")
     logger.info(f"  ✅ Raw files: {settings.TEMP_UPLOAD_DIR}")
     
+    logger.info("\n✅ Application ready for requests!")
+    logger.info("="*70 + "\n")
+    
+    # Schedule background initialization (non-blocking)
+    import asyncio
+    asyncio.create_task(_background_initialization())
+
+
+async def _background_initialization():
+    """Run initialization tasks in background (non-blocking startup)"""
+    import asyncio
+    
+    # Wait a bit for services to fully initialize
+    await asyncio.sleep(2)
+    
     # Check Redis connection
-    logger.info("\n🔴 Checking Redis connection...")
+    logger.info("\n🔴 Checking Redis connection in background...")
     try:
         from app.queue.service import get_queue_service
         queue_service = get_queue_service()
@@ -128,17 +143,10 @@ async def _startup():
             logger.error("  ❌ Redis PING failed")
     except Exception as e:
         logger.error(f"  ❌ Redis connection failed: {str(e)}")
-        if settings.REDIS_CONNECTION_STRING:
-            logger.error("     Make sure REDIS_CONNECTION_STRING is reachable")
-        else:
-            logger.error(f"     Make sure Redis is running at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
     
     # Warm up stopwords
-    logger.info("\n🔥 Warming up services...")
+    logger.info("\n🔥 Warming up services in background...")
     _warm_up_stopwords()
-    
-    logger.info("\n✅ Application ready!")
-    logger.info("="*70 + "\n")
 
 
 def _warm_up_stopwords():

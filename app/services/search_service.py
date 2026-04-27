@@ -46,13 +46,16 @@ class SearchService:
 
     @staticmethod
     def _sanitize_bm25_query(query: str) -> str:
-        """Strip characters that ParadeDB BM25 parser treats as operators.
-
-        Affected chars: : ? ! ( ) { } [ ] ^ " ~ * + - / \\
-        Underscores are preserved (Underthesea compound words e.g. trị_vì, Minh_Mạng).
-        """
+        """Normalize a segmented query string before passing it to ParadeDB."""
         sanitized = re.sub(r'[^\w\s]', ' ', query, flags=re.UNICODE)
         return re.sub(r'\s+', ' ', sanitized).strip()
+
+    @staticmethod
+    def _build_bm25_condition(search_field: str, query: str) -> Optional[str]:
+        """Return the WHERE clause fragment and param key for a ParadeDB disjunction search."""
+        if not query.strip():
+            return None
+        return f"{search_field} ||| :bm25_query"
 
     def _build_auto_stopwords(
         self,
@@ -121,13 +124,15 @@ class SearchService:
         query = self.segmentation_service.segment_query(query)
         query = self._sanitize_bm25_query(query)
 
-        # BM25 search on the word-segmented field
-        search_field = "bm25_text"
+        # BM25 search on the indexed content column
+        bm25_condition = self._build_bm25_condition("c.bm25_text", query)
+        if not bm25_condition:
+            return []
 
         # Build FROM clause với optional join
         from_clause = "child_chunks c"
-        where_conditions = [f"{search_field} @@@ :query_text"]
-        params = {"query_text": query, "limit_k": k}
+        where_conditions = [bm25_condition]
+        params = {"limit_k": k, "bm25_query": query}
 
         if summary_ids:
             from_clause += " INNER JOIN child_chunk_summary_association ccsa ON c.id = ccsa.child_chunk_id"
@@ -468,15 +473,19 @@ class SearchService:
         query = self.segmentation_service.segment_query(query)
         query = self._sanitize_bm25_query(query)
 
-        # Build query with optional filter — search on bm25_text
-        base_query = """
+        # Build query with optional filter — search on indexed summary_content
+        bm25_condition = self._build_bm25_condition("sd.bm25_text", query)
+        if not bm25_condition:
+            return []
+
+        base_query = f"""
             SELECT
                 sd.id,
                 sd.summary_content,
                 sd.metadata as meta_data,
                 paradedb.score(sd.id) as rank
             FROM summary_documents sd
-            WHERE bm25_text @@@ :query_text
+            WHERE {bm25_condition}
         """
         
         if summary_ids:
@@ -487,7 +496,7 @@ class SearchService:
         search_query = text(base_query)
 
         try:
-            params = {"query_text": query, "limit_k": k}
+            params = {"limit_k": k, "bm25_query": query}
             if summary_ids:
                 params["summary_ids"] = summary_ids
             
